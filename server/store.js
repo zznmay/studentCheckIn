@@ -124,6 +124,23 @@ function init() {
     if (!Array.isArray(db.staffs)) db.staffs = defaultStaffs();
   }
 
+  // 修改72：班级管理集合（classes）—— 游离于 COLLECTIONS 之外，与 staffs 同构的独立分支。
+  // 班级名为主键（与 students.className / user.classes 同口径字符串），默认空表，
+  // 由「班级管理」页维护或从学生名单存量迁移生成。
+  const clsFile = fileOf('classes');
+  if (!fs.existsSync(clsFile)) {
+    db.classes = [];
+    save('classes');
+  } else {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(clsFile, 'utf8'));
+      db.classes = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      db.classes = [];
+    }
+    if (!Array.isArray(db.classes)) db.classes = [];
+  }
+
   // 假单日期字段迁移：旧版单日 date → startDate/endDate
   let migrated = false;
   for (const lv of db.leaves) {
@@ -195,9 +212,11 @@ function seed() {
     db.settings = { periodTimes: JSON.parse(JSON.stringify(DEFAULT_PERIOD_TIMES)) };
   }
   if (!Array.isArray(db.staffs)) db.staffs = [];
+  if (!Array.isArray(db.classes)) db.classes = [];
   save('users');
   save('settings');
   save('staffs');
+  save('classes');
 }
 
 module.exports = { db, init, save, getPeriodTimes, DEFAULT_PERIOD_TIMES, secret };

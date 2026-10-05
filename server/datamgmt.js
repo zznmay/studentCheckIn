@@ -19,11 +19,13 @@ const SCHEMA_VERSION = 1;
 const APP_VERSION = '2.1';
 const KEEP_BACKUPS = 30;
 // 数组型集合（恢复时整体替换）；settings 为对象、staffs 为数组，均参与备份
-const ARRAY_KEYS = ['users', 'students', 'attendance', 'leaves', 'tokens', 'staffs', 'appeals', 'punishments'];
+// 修改72：classes 为后增集合（班级管理），必须登记否则不进备份包
+const ARRAY_KEYS = ['users', 'students', 'attendance', 'leaves', 'tokens', 'staffs', 'appeals', 'punishments', 'classes'];
 const ALL_KEYS = [...ARRAY_KEYS, 'settings'];
 // 修改27：appeals 为后增集合——旧数据包不含此键时宽松降级为空数组，保证历史灾备包仍可导入
 // 修改30：punishments 同为后增集合，纳入宽松降级（历史灾备包不含此键时恢复为空数组）
-const LENIENT_KEYS = ['appeals', 'punishments'];
+// 修改72：classes 同理（历史灾备包不含此键时恢复为空数组，不阻断导入）
+const LENIENT_KEYS = ['appeals', 'punishments', 'classes'];
 
 for (const d of [BACKUP_DIR, ARCHIVE_DIR, AUTO_DIR]) fs.mkdirSync(d, { recursive: true });
 

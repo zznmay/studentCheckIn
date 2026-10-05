@@ -7,8 +7,10 @@ const KEY_NAMES = {
   users: '登录账号', students: '学生名单', attendance: '考勤记录',
   leaves: '假单', staffs: '教职工名单', settings: '系统设置', tokens: '登录令牌',
   appeals: '考勤异议', punishments: '处分记录',
+  // 修改72：班级管理集合
+  classes: '班级管理',
 };
-const KEY_DOTS = { users: '#3D5CD6', students: '#24894F', attendance: '#B05E10', leaves: '#6D5BD8', staffs: '#1F7E93', settings: '#5A6484', tokens: '#C13A50', appeals: '#8A5AB5', punishments: '#B05E10' };
+const KEY_DOTS = { users: '#3D5CD6', students: '#24894F', attendance: '#B05E10', leaves: '#6D5BD8', staffs: '#1F7E93', settings: '#5A6484', tokens: '#C13A50', appeals: '#8A5AB5', punishments: '#B05E10', classes: '#2E7D9A' };
 const KIND_NAMES = { backup: '备份', migration: '迁移包', archive: '灰测归档', 'auto-backup': '自动备份' };
 const KIND_CLS = { backup: 'tag-blue', migration: 'tag-purple', archive: 'tag-orange', 'auto-backup': 'tag-cyan' };
 

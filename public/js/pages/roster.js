@@ -18,7 +18,7 @@ export default {
       <div class="page-head">
         <div>
           <h2>班级名单管理</h2>
-          <p class="page-desc">维护各班级学生名单，支持模板批量导入、批量删除与单条增改</p>
+          <p class="page-desc">维护各班级学生名单，支持模板批量导入、批量删除与单条增改；班主任 / 辅导员 / 纪律委员在 <a href="#/classes">班级管理</a> 中按班级统一维护，本页只读展示</p>
         </div>
         <div class="page-actions">
           <button class="btn" id="btnTpl">${ICONS.download} 下载导入模板</button>
@@ -41,7 +41,8 @@ export default {
               <tr>
                 <th style="width:36px"><input type="checkbox" id="checkAll" /></th>
                 <th>年级</th>
-                <th>班级</th><th>姓名</th><th>学号</th><th>纪律委员</th><th>辅导员</th><th>班主任</th><th class="td-actions">操作</th>
+                <th>班级</th><th>姓名</th><th>学号</th>
+                <th title="取自班级管理">纪律委员</th><th title="取自班级管理">辅导员</th><th title="取自班级管理">班主任</th><th class="td-actions">操作</th>
               </tr>
             </thead>
             <tbody id="tbody"><tr><td colspan="8" class="table-empty">加载中…</td></tr></tbody>
@@ -162,6 +163,12 @@ export default {
     // ---- 新增 / 编辑 ----
     function studentModal(s) {
       const isEdit = !!s;
+      // 修改72：班级岗位（班主任 / 辅导员 / 纪律委员）改为在「班级管理」按班级维度统一维护，
+      // 此处不再逐生录入。三岗位的展示值由后端按班级管理权威源覆盖后返回（只读镜像）。
+      const rec = isEdit ? classes.find((c) => c.name === s.className) : null;
+      const postLine = rec
+        ? `班主任：${esc(rec.headTeacher || '—')} · 辅导员：${esc(rec.counselor || '—')} · 纪律委员：${esc(rec.disciplineMember || '—')}`
+        : '该班级尚未在「班级管理」中登记，岗位信息为空';
       modal({
         title: isEdit ? `编辑学生：${s.name}` : '新增学生',
         width: 520,
@@ -180,10 +187,8 @@ export default {
             <div class="form-item"><label>姓名<span class="req">*</span></label><input class="input" name="name" value="${esc(s ? s.name : '')}" /></div>
             <div class="form-item"><label>学号<span class="req">*</span></label><input class="input" name="studentId" value="${esc(s ? s.studentId : '')}" /></div>
           </div>
-          <div class="form-item"><label>纪律委员</label><input class="input" name="disciplineMember" value="${esc(s ? s.disciplineMember : '')}" /></div>
-          <div class="form-row">
-            <div class="form-item"><label>辅导员</label><input class="input" name="counselor" value="${esc(s ? s.counselor : '')}" /></div>
-            <div class="form-item"><label>班主任</label><input class="input" name="classTeacher" value="${esc(s ? s.classTeacher : '')}" /></div>
+          <div class="form-item"><label>班级岗位信息</label>
+            <div class="import-tip" style="margin:0">班主任 / 辅导员 / 纪律委员请在 <a href="#/classes">班级管理</a> 中按班级维度统一维护，本页只读展示。<br/>当前班级岗位：${postLine}</div>
           </div>
         </div>`,
         onOk: async (wrap, close) => {
@@ -193,9 +198,6 @@ export default {
             className: f.querySelector('[name="className"]').value.trim(),
             name: f.querySelector('[name="name"]').value.trim(),
             studentId: f.querySelector('[name="studentId"]').value.trim(),
-            disciplineMember: f.querySelector('[name="disciplineMember"]').value.trim(),
-            counselor: f.querySelector('[name="counselor"]').value.trim(),
-            classTeacher: f.querySelector('[name="classTeacher"]').value.trim(),
           };
           if (isEdit) {
             await api(`/api/students/${s.id}`, { method: 'PUT', body });
@@ -219,7 +221,7 @@ export default {
         title: '批量导入班级名单',
         templateName: 'roster',
         templateFile: '班级名单导入模板.xlsx',
-        tip: '模板字段：班级、姓名、学号、纪律委员、辅导员、班主任（班级 + 姓名 + 学号为必填）。<br/>导入时按"班级 + 学号"匹配：已存在则更新信息，不存在则新增。请上传 .xlsx 格式的 Excel 文件。',
+        tip: '模板字段：<b>年级、班级、姓名、学号</b>（班级 + 姓名 + 学号为必填）。<br/>导入时按"班级 + 学号"匹配：已存在则更新信息，不存在则新增。<br/><b>班主任 / 辅导员 / 纪律委员请在 <a href="#/classes">班级管理</a> 中按班级维度统一维护</b>，本页只读展示，模板中已不再包含这三列。<br/>若表中出现尚未登记的班级，系统会自动建档并标记「待补信息」，可随后到班级管理补全。请上传 .xlsx 格式的 Excel 文件。',
         doImport: (rows) => api('/api/students/import', { method: 'POST', body: { rows } }),
         onDone: () => {
           refreshClasses().then(load);

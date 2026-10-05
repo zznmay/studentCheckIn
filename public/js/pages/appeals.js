@@ -25,6 +25,15 @@ const statusTag = (s) => {
 // reviewer/resolver 存储格式为「姓名(username)」，用用户名后缀匹配最稳
 const isMe = (s, user) => String(s || '').endsWith(`(${user.username})`);
 
+// 修改71：改判「原状态 → 改为」的变更表达。此前原状态与「改为」各占一列且无方向标识，
+// 移动端两个状态徽章会被挤到同一侧挤压重叠（截图「出勤缺勤」），完全看不出改判方向。
+// 这里统一产出一个带箭头的变更单元：原状态（灰底）→ 改为（语义色底），来源与目标一目了然。
+const ATTEND_CLS = { 出勤: 'tag-green', 迟到: 'tag-orange', 缺勤: 'tag-red', 请假: 'tag-blue', 恢复原状态: 'tag-cyan' };
+function changeCell(from, to) {
+  const badge = (v, extra) => `<span class="tag ${ATTEND_CLS[v] || 'tag'}${extra || ''}">${esc(v || '—')}</span>`;
+  return `<span class="apl-change">${badge(from)}<span class="apl-arrow" aria-hidden="true">→</span>${badge(to, ' apl-to')}</span>`;
+}
+
 export default {
   async mount(root) {
     root.innerHTML = `<div class="muted" style="padding:40px;text-align:center">加载中…</div>`;
@@ -91,19 +100,24 @@ export default {
           const statuses = [...new Set(a.records.map((r) => r.status))].join('/');
           return `
           <tr>
-            <td class="num small">${fmtTime(a.createdAt)}</td>
             <td><b>${esc(a.studentName)}</b><div class="muted small">${esc(a.studentId)} · ${esc(a.className)}</div></td>
-            <td class="small">${a.recordsCount} 条（${esc(statuses)}）<div class="muted small">${esc(dateRange)}</div></td>
+            <td class="small"><b>${a.recordsCount} 条</b>（${esc(statuses)}）<div class="muted small">${esc(dateRange)}</div></td>
             <td class="small apl-reason-cell" title="${esc(a.reason || '')}">${esc(a.reason || '')}</td>
             <td>${statusTag(a.status)}</td>
-            <td class="small">${a.reviewInfo ? esc(a.reviewInfo.reviewer) : '<span class="muted">—</span>'}${a.resolveInfo ? `<div class="muted small">改判：${esc(a.resolveInfo.resolver)}${(a.resolveHistory || []).length ? `（重判 ${a.resolveHistory.length} 次）` : ''}</div>` : ''}</td>
+            <td class="small">${fmtTime(a.createdAt)}</td>
+            <td class="small apl-audit-cell">${a.reviewInfo ? esc(a.reviewInfo.reviewer) : '<span class="muted">未审核</span>'}${a.resolveInfo ? `<div class="muted small">重判 ${(a.resolveHistory || []).length + 1} 次 · ${esc(a.resolveInfo.resolver)}</div>` : ''}</td>
             <td><button class="btn-text" data-act="detail" data-id="${esc(a.id)}">详情</button></td>
           </tr>`;
         })
         .join('');
       box.innerHTML = `
-      <div class="table-wrap"><table class="table" data-card="s,t,b,m,d,m,x">
-        <thead><tr><th>提交时间</th><th>学生</th><th>异议记录</th><th>异议理由</th><th>状态</th><th>审核 / 改判</th><th>操作</th></tr></thead>
+      <!-- 修改70：列表卡片重排（布局根因修复）。原映射 s,t,b,m,d,m,x 把「异议记录」「审核/改判」
+           两个字段都放进右侧数值区，叠加 .rc-item 的 overflow-wrap:anywhere，在窄容器里被逐字
+           断行，出现「1 条（缺勤）」「2026-10-02」竖排竖条。新布局按信息层级重排（6 列一一对应）：
+             学生 t/s（主副标题）· 异议记录 g（标签区）· 异议理由 b（中部大字，核心诉求突出）
+             状态 d（右侧徽章）· 提交审核 a（右侧小字）· 操作 x -->
+      <div class="table-wrap"><table class="table" data-card="t,g,b,d,a,m,x">
+        <thead><tr><th>学生</th><th>异议记录</th><th>异议理由</th><th>状态</th><th>提交时间</th><th>审核 / 改判</th><th>操作</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`;
       enhanceTables(box);
@@ -277,8 +291,8 @@ export default {
                   ${hist.map((h, i) => `
                     <div class="apl-history-round">
                       <div class="muted small">第 ${i + 1} 轮 · ${esc(h.resolver)} · ${fmtTime(h.resolvedAt)}</div>
-                      <div class="table-wrap"><table class="table" data-card="t,d,d,a"><thead><tr><th>日期</th><th>原状态</th><th>改为</th><th>结果</th></tr></thead><tbody>
-                        ${(h.items || []).map((x) => `<tr><td class="num">${esc(x.date)}</td><td>${esc(x.from)}</td><td>${esc(x.to)}</td><td>${x.applied ? '<span class="tag tag-green">已改判</span>' : '<span class="tag">跳过</span>'}</td></tr>`).join('')}
+                      <div class="table-wrap"><table class="table" data-card="t,g,a"><thead><tr><th>日期</th><th>状态变更</th><th>结果</th></tr></thead><tbody>
+                        ${(h.items || []).map((x) => `<tr><td class="num">${esc(x.date)}</td><td>${changeCell(x.from, x.to)}</td><td>${x.applied ? '<span class="tag tag-green">已改判</span>' : '<span class="tag">跳过</span>'}</td></tr>`).join('')}
                       </tbody></table></div>
                     </div>`).join('')}
                 </details>`
@@ -286,10 +300,10 @@ export default {
               actionArea.innerHTML = `
               <div class="apl-d-sec-title"><span>改判结果（已办结）${a.resolveInfo && a.resolveInfo.isRe ? '<span class="tag tag-cyan">重新改判</span>' : ''}</span>
                 <span class="muted small">执行人：${esc((a.resolveInfo && a.resolveInfo.resolver) || '')} · ${fmtTime(a.resolveInfo && a.resolveInfo.resolvedAt)}</span></div>
-              <div class="table-wrap apl-d-tbl"><table class="table" data-card="t,d,d,a">
-                <thead><tr><th>日期</th><th>原状态</th><th>改为</th><th>执行结果</th></tr></thead>
+              <div class="table-wrap apl-d-tbl"><table class="table" data-card="t,g,a">
+                <thead><tr><th>日期</th><th>状态变更（原 → 改为）</th><th>执行结果</th></tr></thead>
                 <tbody>${items
-                  .map((x) => `<tr><td class="num">${esc(x.date)}</td><td>${esc(x.from)}</td><td>${esc(x.to)}</td><td>${x.applied ? '<span class="tag tag-green">已改判</span>' : '<span class="tag">跳过（状态已变更）</span>'}</td></tr>`)
+                  .map((x) => `<tr><td class="num">${esc(x.date)}</td><td>${changeCell(x.from, x.to)}</td><td>${x.applied ? '<span class="tag tag-green">已改判</span>' : '<span class="tag">跳过（状态已变更）</span>'}</td></tr>`)
                   .join('')}</tbody>
               </table></div>
               ${histHtml}

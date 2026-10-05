@@ -8,6 +8,8 @@ import LoginView from './pages/login.js';
 import DashboardView from './pages/dashboard.js';
 import AccountsView from './pages/accounts.js';
 import RosterView from './pages/roster.js';
+// 修改72：班级管理（班级信息的唯一维护入口，与班级名单联动）
+import ClassesView from './pages/classes.js';
 import { RollcallListView, RollcallNewView, RollcallDetailView } from './pages/rollcall.js';
 import LeavesView from './pages/leaves.js';
 import StatsView from './pages/stats.js';
@@ -22,6 +24,8 @@ const MENU = [
   { key: 'accounts', label: '账号管理', icon: 'users', path: '#/accounts', roles: ['admin', 'collegeOfficer'] },
   { key: 'datamgmt', label: '数据管理', icon: 'database', path: '#/datamgmt', roles: ['admin'] },
   { key: 'roster', label: '班级名单', icon: 'list', path: '#/roster', roles: ['admin', 'rights', 'collegeOfficer'] },
+  // 修改72：班级管理 —— 班级信息（年级/专业/班主任/辅导员/纪律委员）的唯一维护入口
+  { key: 'classes', label: '班级管理', icon: 'school', path: '#/classes', roles: ['admin', 'collegeOfficer'] },
   { key: 'rollcall', label: '考勤点名', icon: 'check', path: '#/rollcall', roles: ['admin', 'rights', 'discipline', 'headTeacher', 'counselor', 'collegeOfficer'] },
   { key: 'leaves', label: '假单管理', icon: 'file', path: '#/leaves', roles: ['admin', 'rights', 'collegeOfficer'] },
   { key: 'stats', label: '数据统计', icon: 'chart', path: '#/stats', roles: ['admin', 'rights', 'headTeacher', 'counselor', 'collegeOfficer'] },
@@ -40,6 +44,7 @@ const ROUTES = [
   { path: '/accounts', view: AccountsView, menu: 'accounts', roles: ['admin', 'collegeOfficer'] },
   { path: '/datamgmt', view: DataManageView, menu: 'datamgmt', roles: ['admin'] },
   { path: '/roster', view: RosterView, menu: 'roster', roles: ['admin', 'rights', 'collegeOfficer'] },
+  { path: '/classes', view: ClassesView, menu: 'classes', roles: ['admin', 'collegeOfficer'] },
   { path: '/rollcall', view: RollcallListView, menu: 'rollcall' },
   { path: '/rollcall/new', view: RollcallNewView, menu: 'rollcall' },
   { path: '/rollcall/:id', view: RollcallDetailView, menu: 'rollcall' },
@@ -83,10 +88,12 @@ function layoutHtml(activeKey) {
   let sbCollapsed = false;
   try { sbCollapsed = localStorage.getItem(SB_KEY) === '1'; } catch { /* 隐私模式忽略 */ }
   // 修改24：菜单按语义分两组展示（高频业务在前，管理类在后），空组不渲染分组标题
+  // 修改72：「管理」分组新增班级管理（排在班级名单之后，与"先建班、后录名单"的操作顺序一致）
   const G1 = ['dashboard', 'rollcall', 'leaves', 'stats', 'absence', 'appeals', 'punishments'];
+  const G2 = ['roster', 'classes', 'accounts', 'datamgmt'];
   const groups = [
     { cap: '工 作 台', keys: G1 },
-    { cap: '管 理', keys: ['roster', 'accounts', 'datamgmt'] },
+    { cap: '管 理', keys: G2 },
   ];
   const capHtml = (cap) => `<div class="side-cap">${cap}</div>`;
   const itemHtml = (m) => `
@@ -95,11 +102,13 @@ function layoutHtml(activeKey) {
           </a>`;
   const menuHtml = groups
     .map((g) => {
-      const items = menu.filter((m) => g.keys.includes(m.key));
+      // 按分组定义的 keys 顺序取项（此前用 menu.filter，保留的是 MENU 原序，
+      // 导致「管 理」分组下实际显示为 账号管理 → 数据管理 → 班级名单，与定义顺序不符）
+      const items = g.keys.map((k) => menu.find((m) => m.key === k)).filter(Boolean);
       return items.length ? capHtml(g.cap) + items.map(itemHtml).join('') : '';
     })
     .join('');
-  const orphans = menu.filter((m) => !G1.includes(m.key) && !['roster', 'accounts', 'datamgmt'].includes(m.key));
+  const orphans = menu.filter((m) => !G1.includes(m.key) && !G2.includes(m.key));
   const menuBlock = menuHtml + orphans.map(itemHtml).join('');
   return `
   <div class="shell">
