@@ -1,0 +1,12 @@
+{
+  "name": "student-attendance-workbench",
+  "version": "1.0.0",
+  "description": "学生考勤工作台 —— 经典工作台模式的学生上课考勤管理系统（零依赖 Node.js）",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

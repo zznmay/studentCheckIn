@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- 修改53：显式声明只支持浅色。浏览器（Android Chrome 自动深色 / WebView force-dark）只认
+       `only light` 才会放弃对页面强制压暗；仅写 light 时，系统到点切深色仍会把页面强制变暗
+       （即用户反馈的「到了晚上自己强制进入暗夜模式」）。 -->
+  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#EEEBFF" />
+  <title>学生考勤工作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%234A6CF7'/%3E%3Ctext x='50' y='70' font-size='54' text-anchor='middle' fill='white'%3E%E8%80%83%3C/text%3E%3C/svg%3E" />
+  <script>
+    /* 修改53：主题引导——必须在样式表之前执行，避免暗色偏好的用户看到白闪。
+       默认白天模式；只有用户自己开过暗夜模式才启用（不再跟随系统深色）。 */
+    (function () {
+      try {
+        if (localStorage.getItem('kq_theme') === 'dark') {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (e) {
+        /* Safari 隐私模式等禁用 localStorage：按默认白天模式处理 */
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

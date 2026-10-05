@@ -1,0 +1,23 @@
+# 依赖（如后续引入第三方包）
+node_modules/
+
+# 运行时数据：首次启动由 store 自动创建管理员并初始化空业务数据，不入库
+data/*
+!data/.gitkeep
+
+# 系统与编辑器元数据
+.DS_Store
+Thumbs.db
+
+# 项目本地工具元数据（索引 / 记忆 / 部署标记等，不入库）
+.codegraph/
+.workbuddy/
+.zcodeignore
+*.genie
+
+# 压缩包与表格（非源码；如需留存请放入 docs/ 并单独评估）
+*.zip
+*.xlsx
+
+# 日志
+*.log

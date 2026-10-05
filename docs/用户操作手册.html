@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>学生考勤工作台 2.1 · 用户操作手册（纪律委员 / 权益部 / 学院考勤负责人）</title>
+<style>
+  /* ============ 基础与品牌色（与考勤平台保持一致） ============ */
+  :root{
+    --primary:#2f6bff; --primary-hover:#2559e0; --primary-light:#ecf1ff;
+    --danger:#dc2626; --danger-hover:#b91c1c;
+    --green:#059669; --orange:#d97706; --blue:#2f6bff; --purple:#7c3aed; --cyan:#0891b2; --gray:#64748b;
+    --text:#1f2937; --text-2:#475569; --text-3:#94a3b8;
+    --border:#e2e8f0; --border-light:#eef2f7; --bg:#f0f2f5; --card:#fff;
+    --radius:10px; --shadow:0 1px 2px rgba(15,23,42,.04),0 4px 16px rgba(15,23,42,.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif;
+    font-size:15px;line-height:1.75;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased}
+  a{color:var(--primary);text-decoration:none}
+  /* ============ 顶部条 ============ */
+  .topbar{position:sticky;top:0;z-index:50;background:linear-gradient(110deg,#1b2537,#243352);color:#fff;
+    padding:14px 22px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  .topbar .tb-title{font-size:17px;font-weight:700;letter-spacing:.5px;display:flex;align-items:center;gap:10px}
+  .topbar .tb-logo{width:30px;height:30px;border-radius:8px;background:var(--primary);display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:800}
+  .topbar .tb-meta{font-size:12.5px;color:#aebdd6}
+  /* ============ 布局 ============ */
+  .layout{display:flex;align-items:flex-start;max-width:1180px;margin:0 auto;padding:0 16px}
+  .toc{position:sticky;top:60px;align-self:flex-start;width:236px;flex-shrink:0;padding:22px 0 40px}
+  .toc h4{font-size:12px;color:var(--text-3);letter-spacing:1px;margin:16px 0 8px;text-transform:uppercase}
+  .toc a{display:block;color:var(--text-2);padding:6px 12px;border-radius:8px;font-size:13.5px;border-left:3px solid transparent}
+  .toc a:hover{background:var(--primary-light);color:var(--primary)}
+  .toc a.sub{padding-left:24px;font-size:13px}
+  .content{flex:1;min-width:0;padding:22px 0 60px;background:transparent}
+  @media(max-width:880px){.toc{display:none}}
+  /* ============ 卡片/章节 ============ */
+  .section{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);
+    padding:26px 28px;margin-bottom:22px}
+  .section h2{font-size:22px;margin-bottom:6px;display:flex;align-items:center;gap:10px}
+  .section h2 .num{background:var(--primary);color:#fff;width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+  .section h3{font-size:17px;margin:26px 0 10px;padding-left:11px;border-left:4px solid var(--primary)}
+  .section h4.sub{font-size:15px;margin:18px 0 8px;color:var(--text-2)}
+  .lead{color:var(--text-2);margin-bottom:14px}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border-light);margin:20px 0}
+  code{background:#f1f5f9;color:#0f172a;padding:1px 6px;border-radius:5px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* ============ 提示框 ============ */
+  .note{border-radius:10px;padding:13px 15px;margin:14px 0;font-size:14px;display:flex;gap:10px;align-items:flex-start}
+  .note .ico{flex-shrink:0;font-weight:800;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:13px;color:#fff}
+  .note.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}
+  .note.info .ico{background:var(--primary)}
+  .note.warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+  .note.warn .ico{background:var(--orange)}
+  .note.danger{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
+  .note.danger .ico{background:var(--danger)}
+  .note.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+  .note.ok .ico{background:var(--green)}
+  /* ============ 步骤 ============ */
+  .steps{counter-reset:step;margin:14px 0;padding:0;list-style:none}
+  .steps>li{position:relative;padding:12px 14px 12px 50px;margin-bottom:10px;background:#fafbff;border:1px solid var(--border-light);border-radius:10px}
+  .steps>li::before{counter-increment:step;content:counter(step);position:absolute;left:12px;top:12px;width:26px;height:26px;border-radius:50%;
+    background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+  .steps>li b{color:var(--text)}
+  .steps>li .hint{display:block;color:var(--text-2);font-size:13px;margin-top:3px}
+  /* ============ 标签 ============ */
+  .tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;line-height:1.6;white-space:nowrap}
+  .tag-green{background:#dcfce7;color:#059669}
+  .tag-orange{background:#fef3c7;color:#b45309}
+  .tag-red{background:#fee2e2;color:#dc2626}
+  .tag-blue{background:#dbeafe;color:#1d4ed8}
+  .tag-purple{background:#ede9fe;color:#7c3aed}
+  .tag-cyan{background:#cffafe;color:#0e7490}
+  .tag-gray{background:#e2e8f0;color:#475569}
+  /* ============ 表格 ============ */
+  table.tbl{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:#fff;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  table.tbl th,table.tbl td{border-bottom:1px solid var(--border-light);padding:10px 12px;text-align:left;vertical-align:top}
+  table.tbl th{background:#f8fafc;color:var(--text-2);font-weight:600;font-size:13px}
+  table.tbl tr:last-child td{border-bottom:none}
+  table.tbl td.center,table.tbl th.center{text-align:center}
+  .yes{color:var(--green);font-weight:700}
+  .no{color:var(--text-3)}
+  /* ============ 界面示意（迷你截图） ============ */
+  .mock{margin:16px 0;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#f8fafc}
+  .mock .bar{background:#1b2537;color:#cbd5e1;font-size:12.5px;padding:8px 12px;display:flex;align-items:center;gap:8px}
+  .mock .bar .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+  .mock .bar .dots{display:flex;gap:5px}
+  .mock .dots .r{background:#ff5f56}.mock .dots .y{background:#ffbd2e}.mock .dots .g{background:#27c93f}
+  .mock .body{display:flex;min-height:120px}
+  .mock .side{background:#1b2537;color:#9fb0c9;width:170px;flex-shrink:0;padding:12px 10px;font-size:13px}
+  .mock .side .brand{color:#fff;font-weight:700;margin-bottom:12px;font-size:13px}
+  .mock .side .mi{padding:7px 10px;border-radius:7px;margin-bottom:4px;display:flex;align-items:center;gap:8px;color:#9fb0c9}
+  .mock .side .mi.active{background:#2f6bff;color:#fff}
+  .mock .main{padding:14px 16px;flex:1;color:var(--text-2);font-size:13px}
+  .mock .main .crumb{color:var(--text-3);font-size:12px;margin-bottom:10px}
+  .mock .main .panel{background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12.5px;color:var(--text-2);line-height:1.9}
+  .mock .main .btn{display:inline-block;background:var(--primary);color:#fff;border-radius:7px;padding:6px 12px;font-size:12.5px;font-weight:600}
+  .mock .main .btn.ghost{background:#fff;color:var(--primary);border:1px solid var(--primary)}
+  .mock .main .btn.sm{padding:4px 9px;font-size:12px}
+  .mock .main .field{display:block;margin:7px 0}
+  .mock .main .field label{display:block;color:var(--text-3);font-size:11.5px;margin-bottom:2px}
+  .mock .main .field .ctl{background:#fff;border:1px solid var(--border);border-radius:6px;padding:5px 8px;color:var(--text-2);font-size:12.5px;min-width:120px;display:inline-block}
+  .mock .seg{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;margin:3px 4px 3px 0}
+  .mock .seg span{padding:4px 9px;font-size:12px;border-right:1px solid var(--border);color:var(--text-2)}
+  .mock .seg span:last-child{border-right:none}
+  .mock .seg span.on{font-weight:700}
+  .mock .seg span.s-green{background:#dcfce7;color:#059669}
+  .mock .seg span.s-orange{background:#fef3c7;color:#b45309}
+  .mock .seg span.s-red{background:#fee2e2;color:#dc2626}
+  .mock .seg span.s-blue{background:#dbeafe;color:#1d4ed8}
+  /* ============ 流程图 ============ */
+  .flow{margin:16px 0;background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px;overflow-x:auto}
+  .flow svg{display:block;min-width:100%}
+  .flow-cap{text-align:center;color:var(--text-3);font-size:12.5px;margin-top:-4px}
+  /* ============ FAQ ============ */
+  .faq details{border:1px solid var(--border);border-radius:10px;padding:0 14px;margin:10px 0;background:#fff}
+  .faq summary{cursor:pointer;font-weight:600;padding:13px 0;list-style:none;display:flex;align-items:center;gap:8px}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::before{content:"＋";color:var(--primary);font-weight:800;font-size:16px}
+  .faq details[open] summary::before{content:"－"}
+  .faq .ans{padding:0 0 14px;color:var(--text-2)}
+  /* ============ 角色切换导航 ============ */
+  .roletabs{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}
+  .roletabs a{padding:9px 16px;border-radius:10px;font-weight:600;font-size:14px;border:1px solid var(--border);background:#fff;color:var(--text-2)}
+  .roletabs a.discipline{border-color:#a7f3d0;color:#059669}
+  .roletabs a.rights{border-color:#bfdbfe;color:#1d4ed8}
+  .roletabs a.officer{border-color:#a5f3fc;color:#0e7490}
+  .roletabs a:hover{transform:translateY(-1px);box-shadow:var(--shadow)}
+  /* ============ 封面 ============ */
+  .cover{background:linear-gradient(135deg,#1b2537,#2f6bff);color:#fff;border-radius:14px;padding:38px 34px;margin-bottom:22px;box-shadow:var(--shadow)}
+  .cover h1{font-size:28px;margin-bottom:8px;font-weight:800}
+  .cover p{color:#cdd9f0;font-size:15px}
+  .cover .meta{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px}
+  .cover .meta span{background:rgba(255,255,255,.13);padding:6px 13px;border-radius:999px;font-size:13px}
+  .figure-label{font-size:12.5px;color:var(--text-3);margin:6px 0 0;font-weight:600;text-align:center}
+  .legend-row{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
+  .legend-row .lg{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--text-2)}
+  .legend-row .sw{width:16px;height:16px;border-radius:5px;display:inline-block}
+  .footer{text-align:center;color:var(--text-3);font-size:12.5px;padding:24px 0 50px}
+  @media print{body{background:#fff}.topbar{position:static}.toc{display:none}.section{box-shadow:none;break-inside:avoid}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="tb-title"><span class="tb-logo">考</span>学生考勤工作台 2.1 · 用户操作手册</div>
+  <div class="tb-meta">适用角色：纪律委员 · 权益部 · 学院考勤负责人 ｜ 编制日期：2026-09-28</div>
+</div>
+
+<div class="layout">
+  <!-- ============ 目录 ============ -->
+  <nav class="toc">
+    <h4>目录</h4>
+    <a href="#s0">关于本手册</a>
+    <a href="#s1">一、快速上手</a>
+    <a href="#s1a" class="sub">1.1 登录与改密</a>
+    <a href="#s1b" class="sub">1.2 界面与导航</a>
+    <a href="#s2">二、三大角色权限一览</a>
+    <a href="#s3">三、纪律委员篇</a>
+    <a href="#s3a" class="sub">3.1 你能看到的菜单</a>
+    <a href="#s3b" class="sub">3.2 发起课堂点名</a>
+    <a href="#s3c" class="sub">3.3 查看与核对</a>
+    <a href="#s4">四、权益部篇</a>
+    <a href="#s4a" class="sub">4.1 假单管理（核心）</a>
+    <a href="#s4b" class="sub">4.2 班级名单管理</a>
+    <a href="#s4c" class="sub">4.3 考勤更正与统计</a>
+    <a href="#s5">五、学院考勤负责人篇</a>
+    <a href="#s5a" class="sub">5.1 账号管理</a>
+    <a href="#s5b" class="sub">5.2 院级业务操作</a>
+    <a href="#s6">六、关键业务规则</a>
+    <a href="#s7">七、常见问题 FAQ</a>
+    <a href="#s8">八、附录与术语</a>
+  </nav>
+
+  <main class="content">
+    <!-- ============ 封面 ============ -->
+    <div class="cover">
+      <h1>学生考勤工作台 · 用户操作手册</h1>
+      <p>面向纪律委员、权益部、学院考勤负责人的日常操作指南。本手册以「图文结合 + 分步说明」的方式，帮助非技术人员独立完成考勤管理、纪律维护与权益处理等各项工作。</p>
+      <div class="meta">
+        <span>版本：应用 2.1</span>
+        <span>线上地址：student-attendance-21705.app.workbuddy.host</span>
+        <span>编制：2026-09-28</span>
+        <span>阅读对象：三大一线角色</span>
+      </div>
+    </div>
+
+    <!-- ============ 关于 ============ -->
+    <div class="section" id="s0">
+      <h2><span class="num">i</span>关于本手册</h2>
+      <p class="lead">本手册配套的线上系统为「学生考勤工作台 2.1」，支持电脑浏览器与手机微信/浏览器访问。系统按角色授权，不同角色登录后看到的菜单与可操作范围不同。</p>
+      <ul>
+        <li><b>纪律委员</b>：负责本班课堂点名、记录出勤，并把确认链接发给任课老师。</li>
+        <li><b>权益部</b>：负责请假（假单）的导入与核对、班级名单维护、考勤状态更正、数据导出统计。</li>
+        <li><b>学院考勤负责人</b>：负责开通一线账号、分配点名权限，并以学院视角统筹名单、考勤、假单与统计。</li>
+      </ul>
+      <div class="note info"><span class="ico">!</span><div>所有操作均为<b>在线实时生效</b>，数据保存在学院服务器（云端）。建议首次登录后立即修改初始密码，并定期通过「数据管理」做好备份。</div></div>
+      <p class="figure-label">图 0 · 平台整体工作流（三角色协作）</p>
+      <div class="flow">
+        <svg viewBox="0 0 920 150" width="920" height="150" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/>
+            </marker>
+          </defs>
+          <g font-family="PingFang SC,Microsoft YaHei,sans-serif" font-size="13" text-anchor="middle">
+            <rect x="20" y="55" width="150" height="44" rx="10" fill="#dcfce7" stroke="#059669"/>
+            <text x="95" y="82" fill="#065f46">纪律委员</text>
+            <text x="95" y="100" fill="#065f46" font-size="11">发起课堂点名</text>
+
+            <rect x="220" y="55" width="170" height="44" rx="10" fill="#dbeafe" stroke="#1d4ed8"/>
+            <text x="305" y="82" fill="#1e40af">权益部</text>
+            <text x="305" y="100" fill="#1e40af" font-size="11">假单导入 / 考勤更正 / 统计</text>
+
+            <rect x="450" y="55" width="190" height="44" rx="10" fill="#cffafe" stroke="#0e7490"/>
+            <text x="545" y="82" fill="#155e75">学院考勤负责人</text>
+            <text x="545" y="100" fill="#155e75" font-size="11">开通账号 / 分配权限</text>
+
+            <rect x="700" y="55" width="160" height="44" rx="10" fill="#e2e8f0" stroke="#64748b"/>
+            <text x="780" y="82" fill="#334155">云端考勤数据库</text>
+            <text x="780" y="100" fill="#334155" font-size="11">名单 / 考勤 / 假单</text>
+
+            <line x1="170" y1="77" x2="215" y2="77" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)"/>
+            <line x1="390" y1="77" x2="445" y2="77" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)"/>
+            <line x1="640" y1="77" x2="695" y2="77" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)"/>
+            <line x1="780" y1="40" x2="780" y2="52" stroke="#94a3b8" stroke-width="2"/>
+            <text x="780" y="34" fill="#64748b" font-size="11">统一存储 · 实时同步</text>
+          </g>
+        </svg>
+        <div class="flow-cap">三类角色围绕同一份云端考勤数据协作：纪律委员录入 → 权益部核对请假与更正 → 负责人统筹账号与权限</div>
+      </div>
+    </div>
+
+    <!-- ============ 一、快速上手 ============ -->
+    <div class="section" id="s1">
+      <h2><span class="num">1</span>一、快速上手</h2>
+
+      <h3 id="s1a">1.1 登录与修改密码</h3>
+      <ol class="steps">
+        <li><b>打开系统</b>：在电脑或手机浏览器输入线上地址 <code>student-attendance-21705.app.workbuddy.host</code>，进入登录页。<span class="hint">手机可把链接发给同事，或在微信中直接点开。</span></li>
+        <li><b>输入账号与密码</b>：账号由学院考勤负责人开通并下发；初始密码规则见下表。<span class="hint">登录页右侧小眼睛可切换密码明文/密文，方便核对。</span></li>
+        <li><b>首次登录强制改密</b>：首次登录后系统会自动跳到「修改密码」页，请输入新密码并保存。<span class="hint" style="color:var(--danger)">初始密码一旦用于他人账号，请务必第一时间修改，避免账号被盗用。</span></li>
+        <li><b>登录成功</b>：自动进入「工作台」，左侧/顶部菜单即为你当前角色可使用的功能。</li>
+      </ol>
+
+      <div class="mock">
+        <div class="bar"><div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div><span>登录页 · student-attendance-21705.app.workbuddy.host</span></div>
+        <div class="body" style="background:#f0f2f5;padding:18px">
+          <div style="margin:0 auto;max-width:340px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:22px;box-shadow:var(--shadow)">
+            <div style="text-align:center;font-weight:700;font-size:16px;margin-bottom:4px">学生考勤工作台</div>
+            <div style="text-align:center;color:var(--text-3);font-size:12px;margin-bottom:16px">学院课堂考勤管理 · 账号/名单/点名/假单/统计</div>
+            <div style="margin-bottom:12px"><div style="font-size:12px;color:var(--text-3);margin-bottom:4px">账号</div><div style="border:1px solid var(--border);border-radius:7px;padding:8px 10px;color:var(--text-2)">discipline_2025xxxx</div></div>
+            <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--text-3);margin-bottom:4px">密码</div><div style="border:1px solid var(--border);border-radius:7px;padding:8px 10px;color:var(--text-2)">••••••••</div></div>
+            <div style="background:var(--primary);color:#fff;text-align:center;border-radius:8px;padding:10px;font-weight:600">登 录</div>
+            <div style="text-align:center;color:var(--text-3);font-size:11px;margin-top:10px">账号由学院考勤负责人开通并下发</div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-label">图 1-1 · 登录页示意</p>
+
+      <table class="tbl">
+        <thead><tr><th>账号类型</th><th>登录账号</th><th>初始密码</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>管理员（admin）</td><td><code>admin</code></td><td><code>admin123</code></td><td>系统最高权限，仅 1 个，负责备份与系统设置</td></tr>
+          <tr><td>学生账号（纪律委员 / 权益部）</td><td>学号</td><td><code>Hzpt@学号后六位</code></td><td>例如学号 2025010012 → 密码 <code>Hzpt@010012</code></td></tr>
+          <tr><td>教职工账号（班主任 / 辅导员）</td><td>工号</td><td><code>Hzpt@工号</code></td><td>由教职工名单生成</td></tr>
+        </tbody>
+      </table>
+      <div class="note warn"><span class="ico">!</span><div><b>管理员密码安全提醒</b>：线上管理员默认密码为 <code>admin123</code>。如果你是负责人或管理员，请立即登录并在「修改密码」中改为高强度密码；不要把这个初始密码告诉无关人员。</div></div>
+
+      <h3 id="s1b">1.2 界面布局与导航</h3>
+      <p>登录后页面分为两部分：</p>
+      <ul>
+        <li><b>左侧深色侧边栏（手机为上方可展开的抽屉）</b>：显示系统名称、你当前可见的功能菜单、你的姓名与角色标签，最下方是「退出登录」。</li>
+        <li><b>右侧主内容区</b>：顶部显示日期与你的角色标签，下方是各功能的操作页面（工作台、点名、假单、名单、统计、账号等）。</li>
+      </ul>
+      <div class="note info"><span class="ico">!</span><div>不同角色看到的菜单项不同——这是系统自动按权限过滤的，你只会看到自己有权使用的功能，无需担心点错。</div></div>
+      <p><b>退出登录</b>：点击侧边栏底部「退出登录」即可安全退出；在公共电脑上操作完毕后请务必退出。</p>
+    </div>
+
+    <!-- ============ 二、角色权限一览 ============ -->
+    <div class="section" id="s2">
+      <h2><span class="num">2</span>二、三大角色权限一览</h2>
+      <p class="lead">下表汇总三角色登录后能看到/使用的菜单与关键操作。✅ = 可使用，🚫 = 不可见/不可用。具体每个功能的操作见后续章节。</p>
+      <table class="tbl">
+        <thead>
+          <tr><th>功能菜单</th><th class="center">纪律委员</th><th class="center">权益部</th><th class="center">学院考勤负责人</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>工作台（总览）</td><td class="center yes">✅</td><td class="center yes">✅</td><td class="center yes">✅*</td><td>数据总览与最近点名；<span style="color:var(--text-3)">*负责人默认菜单不显示，可经数据统计查看全院数据</span></td></tr>
+          <tr><td>考勤点名</td><td class="center yes">✅<br><span class="tag tag-gray" style="font-size:11px">仅发起+查看</span></td><td class="center yes">✅<br><span class="tag tag-gray" style="font-size:11px">查看+更正</span></td><td class="center yes">✅<br><span class="tag tag-gray" style="font-size:11px">院级</span></td><td>发起课堂点名、查看与更正考勤</td></tr>
+          <tr><td>假单管理</td><td class="center no">🚫</td><td class="center yes">✅</td><td class="center yes">✅</td><td>导入/核对学生请假，自动对账考勤</td></tr>
+          <tr><td>班级名单</td><td class="center no">🚫</td><td class="center yes">✅</td><td class="center yes">✅</td><td>查看/导入/维护学生名单</td></tr>
+          <tr><td>数据统计</td><td class="center no">🚫</td><td class="center yes">✅</td><td class="center yes">✅</td><td>到课率、缺勤统计与导出</td></tr>
+          <tr><td>账号管理</td><td class="center no">🚫</td><td class="center no">🚫</td><td class="center yes">✅</td><td>开通/编辑账号、分配点名权限</td></tr>
+          <tr><td>数据管理（备份）</td><td class="center no">🚫</td><td class="center no">🚫</td><td class="center no">🚫</td><td>仅管理员可用</td></tr>
+        </tbody>
+      </table>
+      <div class="legend-row">
+        <span class="lg"><span class="tag tag-green">纪律委员</span> 角色标签颜色</span>
+        <span class="lg"><span class="tag tag-blue">权益部</span> 角色标签颜色</span>
+        <span class="lg"><span class="tag tag-cyan">学院考勤负责老师</span> 角色标签颜色</span>
+      </div>
+      <div class="note info"><span class="ico">i</span><div><b>关于「多重身份」</b>：一个账号可以同时拥有多个角色（例如既是纪律委员又是权益部成员）。权限按所分配角色合并生效。本手册按单一主要角色说明，多重身份时你能用的功能是两个角色权限的并集。</div></div>
+    </div>
+
+    <!-- ============ 三、纪律委员篇 ============ -->
+    <div class="section" id="s3">
+      <h2><span class="num">3</span>三、纪律委员操作手册</h2>
+      <p class="lead">你是一线考勤录入的第一道关口。核心任务：在每节课上对本班同学发起点名、记录出勤，并把确认链接发给任课老师签字确认。</p>
+
+      <h3 id="s3a">3.1 你登录后看到的菜单</h3>
+      <div class="mock">
+        <div class="bar"><div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div><span>纪律委员视角 · 左侧菜单</span></div>
+        <div class="body">
+          <div class="side">
+            <div class="brand">学生考勤工作台</div>
+            <div class="mi active">▦ 工作台</div>
+            <div class="mi">✓ 考勤点名</div>
+            <div class="mi" style="opacity:.4">📁 班级名单（无权限）</div>
+            <div class="mi" style="opacity:.4">📄 假单管理（无权限）</div>
+            <div class="mi" style="opacity:.4">📊 数据统计（无权限）</div>
+          </div>
+          <div class="main">
+            <div class="crumb">工作台 /</div>
+            <div class="panel">
+              你好，纪律委员！本班今日点名 2 次。<br>
+              快捷操作：<span class="btn">发起点名</span><br><br>
+              最近点名：高等数学 · 1-2节 · 应到 48 人（出勤 45 / 迟到 1 / 缺勤 2 / 请假 0）
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-label">图 3-1 · 纪律委员可见菜单（仅工作台 + 考勤点名）</p>
+      <div class="note warn"><span class="ico">!</span><div>若点击「考勤点名 → 发起点名」后提示<b>「暂无可点名的班级」</b>，说明管理员还没在你的账号上分配班级权限。请联系<b>学院考勤负责人</b>在「账号管理」中为你勾选本班，再回来操作。</div></div>
+
+      <h3 id="s3b">3.2 发起一次课堂点名（核心操作）</h3>
+      <ol class="steps">
+        <li><b>进入发起点名</b>：侧边栏点击「考勤点名」→ 右上角蓝色按钮 <span class="tag tag-blue">＋ 发起点名</span>。</li>
+        <li><b>选择点名信息</b>：
+          <span class="hint">① <b>班级</b>（下拉选择你被授权的班级）；② <b>上课日期</b>（默认今天，可改）；③ <b>节次</b>（勾选 1-2节 / 3-4节 / 5-6节 / 7-8节，可多选）；④ <b>课程名称</b>（必填，如"高等数学"）；⑤ 任课老师（选填）。</span></li>
+        <li><b>系统自动加载名单</b>：选好班级后会自动列出全班同学，并<b>预填考勤状态</b>：
+          <span class="hint">已被通过假单覆盖的同学 → 自动预标为「请假」并备注事由；其余同学 → 默认「出勤」。你只需对实际不符的同学手动改一下即可。</span></li>
+        <li><b>标记考勤状态</b>：在每个同学行右侧，点击 <span class="tag tag-green">出勤</span><span class="tag tag-orange">迟到</span><span class="tag tag-red">缺勤</span><span class="tag tag-blue">请假</span> 四个按钮之一。需要快速操作可用顶部「全部出勤 / 全部缺勤」。</li>
+        <li><b>填写备注（可选）</b>：如某同学迟到或请假，可在备注列填写原因（如"迟到 10 分钟""病假"）。</li>
+        <li><b>保存点名记录</b>：点击右下角 <span class="tag tag-blue">保存点名记录</span>。若当天该班级同一节次已点过名，系统会提示"记录已存在"并跳转查看，不会重复创建。</li>
+      </ol>
+
+      <div class="mock">
+        <div class="bar"><div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div><span>发起点名 · 填写信息与名单</span></div>
+        <div class="body" style="background:#fafbff;padding:16px">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px;max-width:520px;margin:0 auto">
+            <div style="font-weight:700;margin-bottom:10px">点名信息</div>
+            <div class="field"><label>班级</label><span class="ctl">软件2511 ▾</span></div>
+            <div class="field"><label>上课日期</label><span class="ctl">2026-09-28</span></div>
+            <div class="field"><label>节次（可多选）</label><span class="ctl">☑ 1-2节 ☑ 3-4节</span></div>
+            <div class="field"><label>课程名称</label><span class="ctl">高等数学</span></div>
+            <div style="font-weight:600;margin:12px 0 6px">学生考勤（48 人）</div>
+            <div style="font-size:12.5px;color:var(--text-2)">2025010012 张伟 <span class="seg"><span class="s-green on">出勤</span><span>迟到</span><span>缺勤</span><span>请假</span></span></div>
+            <div style="font-size:12.5px;color:var(--text-2)">2025010013 李娜 <span class="seg"><span>出勤</span><span>迟到</span><span class="s-red on">缺勤</span><span>请假</span></span></div>
+            <div style="font-size:12.5px;color:var(--text-2)">2025010014 王芳 <span class="seg"><span>出勤</span><span>迟到</span><span>缺勤</span><span class="s-blue on">请假</span></span><span class="tag tag-blue" style="font-size:10px">病假已通过</span></div>
+            <div style="text-align:right;margin-top:12px"><span class="btn">保存点名记录</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-label">图 3-2 · 发起点名页示意（每名学生一行，四态按钮直接点选）</p>
+
+      <div class="flow">
+        <svg viewBox="0 0 940 130" width="940" height="130" xmlns="http://www.w3.org/2000/svg">
+          <defs><marker id="ar2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/></marker></defs>
+          <g font-family="PingFang SC,Microsoft YaHei,sans-serif" font-size="12.5" text-anchor="middle">
+            <rect x="10" y="45" width="110" height="42" rx="9" fill="#ecf1ff" stroke="#2f6bff"/><text x="65" y="63" fill="#1e40af">考勤点名</text><text x="65" y="79" fill="#1e40af" font-size="10.5">点＋发起点名</text>
+            <rect x="150" y="45" width="120" height="42" rx="9" fill="#ecf1ff" stroke="#2f6bff"/><text x="210" y="63" fill="#1e40af">选班级/日期</text><text x="210" y="79" fill="#1e40af" font-size="10.5">/节次/课程</text>
+            <rect x="300" y="45" width="120" height="42" rx="9" fill="#ecf1ff" stroke="#2f6bff"/><text x="360" y="63" fill="#1e40af">系统加载名单</text><text x="360" y="79" fill="#1e40af" font-size="10.5">预填请假</text>
+            <rect x="450" y="45" width="110" height="42" rx="9" fill="#ecf1ff" stroke="#2f6bff"/><text x="505" y="63" fill="#1e40af">标记状态</text><text x="505" y="79" fill="#1e40af" font-size="10.5">出勤/迟到等</text>
+            <rect x="590" y="45" width="100" height="42" rx="9" fill="#dcfce7" stroke="#059669"/><text x="640" y="63" fill="#065f46">保存记录</text><text x="640" y="79" fill="#065f46" font-size="10.5">提交成功</text>
+            <rect x="720" y="45" width="150" height="42" rx="9" fill="#cffafe" stroke="#0e7490"/><text x="795" y="63" fill="#155e75">复制确认链接</text><text x="795" y="79" fill="#155e75" font-size="10.5">发给任课老师</text>
+            <line x1="120" y1="66" x2="147" y2="66" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar2)"/>
+            <line x1="270" y1="66" x2="297" y2="66" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar2)"/>
+            <line x1="420" y1="66" x2="447" y2="66" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar2)"/>
+            <line x1="560" y1="66" x2="587" y2="66" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar2)"/>
+            <line x1="690" y1="66" x2="717" y2="66" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar2)"/>
+          </g>
+        </svg>
+        <div class="flow-cap">纪律委员点名闭环：录入 → 保存 → 推送任课老师签字确认</div>
+      </div>
+
+      <h3 id="s3c">3.3 查看、核对与确认</h3>
+      <h4 class="sub">① 复制确认链接发给任课老师</h4>
+      <p>保存点名后进入「点名详情」页，点击 <span class="tag tag-blue">复制确认链接（发给任课老师）</span>。把这条链接通过微信等方式发给本节课任课老师，老师打开后会核对名单并<b>手写签名确认</b>（老师无需登录）。</p>
+      <div class="note info"><span class="ico">i</span><div><b>确认机制说明</b>：任课老师签字确认后，该记录即被锁定为「已确认」。老师<b>只需签字一次</b>，后续考勤状态的修改不影响这次确认的有效性。详情页会显示「已确认 · 确认人 · 时间」以及老师的手写签名图片。</div></div>
+
+      <h4 class="sub">② 点名详情为「只读锁定」</h4>
+      <p>纪律委员提交点名后，记录会锁定为<b>只读</b>（页面显示「已锁定 · 仅查看」）。这是因为考勤录入的第一责任人就是你，提交即生效；若之后需要更正某位同学的状态（例如发现记错），请通知<b>权益部</b>或<b>学院考勤负责人</b>在详情页修改。</p>
+      <div class="mock">
+        <div class="bar"><div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div><span>点名详情 · 纪律委员（只读锁定）</span></div>
+        <div class="body" style="background:#fafbff;padding:16px">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px;max-width:520px;margin:0 auto;font-size:12.5px;color:var(--text-2)">
+            <div style="font-weight:700">点名详情 · 软件2511</div>
+            <div>日期 2026-09-28 ｜ 1-2节 ｜ 高等数学 ｜ 应到 48</div>
+            <div style="margin:8px 0"><span class="tag tag-gray">已锁定 · 仅查看</span> <span class="tag tag-green">已确认</span></div>
+            <div>2025010012 张伟 — 出勤</div>
+            <div>2025010013 李娜 — <span class="tag tag-red" style="font-size:11px">缺勤</span></div>
+            <div>2025010014 王芳 — <span class="tag tag-blue" style="font-size:11px">请假</span>（病假已通过）</div>
+            <div style="color:var(--text-3);margin-top:8px">如需更正，请联系权益部或学院考勤负责人</div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-label">图 3-3 · 纪律委员视角的点名详情（锁定只读，可复制确认链接）</p>
+      <div class="note ok"><span class="ico">✓</span><div>在「考勤点名」列表页，你也可以用「班级 / 日期 / 关键词」筛选自己发起的记录，点击「详情」查看；列表中的「复制链接」同样可发给任课老师。</div></div>
+    </div>
+
+    <!-- ============ 四、权益部篇 ============ -->
+    <div class="section" id="s4">
+      <h2><span class="num">4</span>四、权益部操作手册</h2>
+      <p class="lead">你是请假（假单）与考勤质量的把关人。核心职责：把学生请假信息导入系统、让假单自动对账考勤、维护班级名单、对异常考勤进行更正，并导出统计报表。</p>
+
+      <h3 id="s4a">4.1 假单管理（核心职责）</h3>
+      <p>侧边栏点击「假单管理」进入。页面顶部一排按钮即你的主要操作入口。</p>
+
+      <h4 class="sub">① 批量导入假单（最常用）</h4>
+      <ol class="steps">
+        <li>点击右上角 <span class="tag tag-blue">批量导入假单</span> → 在弹窗中先<b>下载导入模板</b>（如未下载过）。</li>
+        <li>在 Excel 模板中按列填写：<b>班级、姓名、学号、请假开始日期、开始时间、结束日期、结束时间、假别、事由</b>。<span class="hint">跨天请假只需填一条：系统按"连续时间段"处理（首日自开始时间、中间日全天、末日至结束时间）。单日请假两个日期填同一天。</span></li>
+        <li>保存 Excel（.xlsx 格式），回到弹窗上传，系统<b>逐行校验</b>：学号与姓名需存在于班级名单；日期/时间格式错误或先后颠倒会逐行报错，方便你定位修正。</li>
+        <li>确认无误后提交，系统按<b>当天上课时间段基准</b>自动完成考勤双向对账（见下方规则），导入完成。</li>
+      </ol>
+
+      <h4 class="sub">② 导入系统请假数据（对接外部系统）</h4>
+      <p>如果你校有独立的请假审批系统，导出了《学生请假信息》Excel，可点击 <span class="tag tag-blue">导入系统请假数据</span> 上传。系统会<b>只导入"审核状态=已通过"</b>的记录，未通过/待审核自动跳过，导入后同样自动对账考勤。</p>
+
+      <h4 class="sub">③ 上课时间段设置（决定假单是否生效）</h4>
+      <p>点击 <span class="tag tag-gray">上课时间段设置</span> 可调整每节课的起止时间（默认 1-2节 08:00–09:40、3-4节 10:00–11:40、5-6节 14:00–15:40、7-8节 16:00–17:40）。<b>判定规则</b>：请假时间段需<b>完整包含</b>某节次的上课时间，该节次的请假才会生效。调整基准仅影响后续假单与"重新应用"，不会自动改动已有考勤。</p>
+
+      <h4 class="sub">④ 查看、筛选与处理</h4>
+      <ul>
+        <li><b>筛选</b>：可按班级（多选）、状态（待生效/已生效）、关键词（姓名/学号/班级/事由）查询。</li>
+        <li><b>状态三态</b>（系统用颜色区分）：
+          <div class="legend-row">
+            <span class="lg"><span class="tag tag-orange">待生效</span> 请假还没开始</span>
+            <span class="lg"><span class="tag tag-blue">生效中</span> 请假期间内，点名缺勤会自动改判请假</span>
+            <span class="lg"><span class="tag tag-green">已生效</span> 已成功套用对账</span>
+            <span class="lg"><span class="tag tag-gray">未生效</span> 请假已结束但期间无缺勤可套用</span>
+          </div>
+        </li>
+        <li><b>重新应用</b>：对"待生效/未生效"的假单，若想立即套用对账，点「重新应用」即可把对应缺勤改为请假（或把无覆盖的请假改回缺勤）。</li>
+        <li><b>删除</b>：错误假单点「删除」。删除后会自动重新对账——原本因这张假单被改成的"请假"会改回"缺勤"。</li>
+      </ul>
+
+      <div class="mock">
+        <div class="bar"><div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div><span>假单管理 · 列表与操作</span></div>
+        <div class="body" style="background:#fafbff;padding:16px">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px;max-width:560px;margin:0 auto;font-size:12px;color:var(--text-2)">
+            <div style="margin-bottom:8px">快捷：<span class="btn ghost sm">上课时间段设置</span> <span class="btn ghost sm">下载模板</span> <span class="btn ghost sm">导入系统数据</span> <span class="btn sm">批量导入假单</span></div>
+            <div style="display:flex;gap:6px;margin-bottom:8px"><span class="tag tag-orange">待生效 3</span><span class="tag tag-green">已生效 71</span></div>
+            <div style="border-top:1px solid var(--border-light);padding-top:6px">2025010014 王芳 ｜ 软件2511 ｜ 09-28 08:00~09:40 ｜ <span class="tag tag-purple">1-2节</span> <span class="tag tag-orange">病假</span> <span class="tag tag-green">已生效</span> ｜ 操作：<span style="color:var(--primary)">重新应用</span> <span style="color:var(--danger)">删除</span></div>
+            <div style="border-top:1px solid var(--border-light);padding-top:6px">2025010020 赵强 ｜ 软件2511 ｜ 09-30 全天 ｜ <span class="tag tag-blue">事假</span> <span class="tag tag-orange">待生效</span> ｜ 操作：<span style="color:var(--primary)">重新应用</span> <span style="color:var(--danger)">删除</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-label">图 4-1 · 假单管理列表示意（状态分色 + 重新应用/删除）</p>
+
+      <div class="flow">
+        <svg viewBox="0 0 940 140" width="940" height="140" xmlns="http://www.w3.org/2000/svg">
+          <defs><marker id="ar3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/></marker></defs>
+          <g font-family="PingFang SC,Microsoft YaHei,sans-serif" font-size="12" text-anchor="middle">
+            <rect x="10" y="50" width="120" height="42" rx="9" fill="#dbeafe" stroke="#1d4ed8"/><text x="70" y="68" fill="#1e40af">下载/准备</text><text x="70" y="83" fill="#1e40af" font-size="10">假单Excel</text>
+            <rect x="150" y="50" width="120" height="42" rx="9" fill="#dbeafe" stroke="#1d4ed8"/><text x="210" y="68" fill="#1e40af">批量导入</text><text x="210" y="83" fill="#1e40af" font-size="10">逐行校验</text>
+            <rect x="290" y="50" width="150" height="42" rx="9" fill="#dbeafe" stroke="#1d4ed8"/><text x="365" y="68" fill="#1e40af">按上课时间段</text><text x="365" y="83" fill="#1e40af" font-size="10">自动双向对账</text>
+            <rect x="460" y="20" width="170" height="42" rx="9" fill="#dcfce7" stroke="#059669"/><text x="545" y="38" fill="#065f46">覆盖节次的缺勤</text><text x="545" y="53" fill="#065f46" font-size="10">→ 自动改"请假"</text>
+            <rect x="460" y="78" width="170" height="42" rx="9" fill="#fee2e2" stroke="#dc2626"/><text x="545" y="96" fill="#991b1b">未覆盖的请假</text><text x="545" y="111" fill="#991b1b" font-size="10">→ 自动改回"缺勤"</text>
+            <rect x="660" y="50" width="120" height="42" rx="9" fill="#e2e8f0" stroke="#64748b"/><text x="720" y="68" fill="#334155">查看/筛选</text><text x="720" y="83" fill="#334155" font-size="10">待生效·已生效</text>
+            <rect x="810" y="50" width="120" height="42" rx="9" fill="#cffafe" stroke="#0e7490"/><text x="870" y="68" fill="#155e75">必要时</text><text x="870" y="83" fill="#155e75" font-size="10">重新应用/删除</text>
+            <line x1="130" y1="71" x2="147" y2="71" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar3)"/>
+            <line x1="270" y1="71" x2="287" y2="71" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar3)"/>
+            <line x1="440" y1="71" x2="457" y2="71" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar3)"/>
+            <line x1="580" y1="71" x2="657" y2="71" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar3)"/>
+            <line x1="780" y1="71" x2="807" y2="71" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar3)"/>
+            <line x1="545" y1="62" x2="545" y2="75" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"/>
+          </g>
+        </svg>
+        <div class="flow-cap">假单导入 → 系统按"上课时间段"自动对账：该请的请、该扣的扣</div>
+      </div>
+
+      <h3 id="s4b">4.2 班级名单管理</h3>
+      <p>侧边栏点击「班级名单」进入（菜单名"班级名单管理"）。你可以：</p>
+      <ul>
+        <li><b>查看与搜索</b>：按年级、班级、关键词（姓名/学号/辅导员等）筛选；支持勾选批量删除。</li>
+        <li><b>批量导入</b>：点 <span class="tag tag-blue">批量导入</span> 下载模板，填写后上传，覆盖/更新全班名单（含年级、班级、姓名、学号、辅导员、班主任、纪律委员等字段）。</li>
+        <li><b>新增学生</b>：点 <span class="tag tag-blue">＋ 新增学生</span> 单条录入。</li>
+        <li><b>单条修改</b>：每行「操作」可编辑或删除。</li>
+      </ul>
+      <div class="note info"><span class="ico">i</span><div>名单是点名与假单匹配的基础。若某同学请假导入时提示"名单外"，请先确认其班级、学号、姓名是否与名单完全一致（系统对全角/半角、空格较敏感）。名单维护建议由权益部统一负责，避免多处不一致。</div></div>
+
+      <h3 id="s4c">4.3 考勤更正与数据统计</h3>
+      <h4 class="sub">① 考勤点名中的更正</h4>
+      <p>在「考勤点名」列表进入任意记录的「点名详情」，你（权益部）拥有<b>修改权限</b>：可单独改某位同学的状态并「保存修改」。保存后系统会按假单再次自动复核（未覆盖的"请假"会被改判"缺勤"）。这对纠正纪律委员误记、补登请假非常有用。</p>
+      <div class="note warn"><span class="ico">!</span><div><b>权限边界</b>：纪律委员提交的记录对纪律委员本人是<b>只读锁定</b>的；只有权益部、学院考勤负责人、管理员可以更正。请勿在未经核对的情况下随意改动他人录入的考勤。</div></div>
+
+      <h4 class="sub">② 数据统计与导出</h4>
+      <p>侧边栏点击「数据统计」，有三个标签页：</p>
+      <ul>
+        <li><b>班级汇总</b>：各班点名次数、应到人次、出勤/迟到/缺勤/请假人次、到课率。</li>
+        <li><b>学生明细</b>：到每个学生级别的到课率，便于精准跟踪长期缺勤同学。</li>
+        <li><b>缺勤统计</b>：按周/自定义时间段统计各班缺勤情况，可设缺勤次数阈值筛选重点对象。</li>
+      </ul>
+      <p>点击右上角 <span class="tag tag-blue">导出当前数据（Excel）</span> 即可把当前查询结果导出为 Excel 报表，用于学院通报或存档。</p>
+      <div class="note ok"><span class="ico">✓</span><div>到课率计算公式：<code>到课率 =（出勤 + 迟到）÷ 应到人次</code>。缺勤节数按整节计算（一条涉及"1-2节"的缺勤记 2 节）。</div></div>
+    </div>
+
+    <!-- ============ 五、学院考勤负责人篇 ============ -->
+    <div class="section" id="s5">
+      <h2><span class="num">5</span>五、学院考勤负责人操作手册</h2>
+      <p class="lead">你是学院考勤工作的统筹者。除了一线业务（名单、点名、假单、统计）的院级视角外，你还负责<b>开通账号、分配点名权限</b>——这是保障纪律委员、权益部能正常工作的前提。</p>
+
+      <h3 id="s5a">5.1 账号管理（你的专属权限）</h3>
+      <p>侧边栏点击「账号管理」（仅管理员与你能看到）。页面有两个标签页：<b>系统账号</b> 与 <b>教职工名单</b>。</p>
+
+      <h4 class="sub">① 新建账号（开通纪律委员 / 权益部等）</h4>
+      <ol class="steps">
+        <li>在「系统账号」页点右上角 <span class="tag tag-blue">新建账号</span>。</li>
+        <li>选择<b>账号角色</b>：纪律委员（学生）/ 权益部（学生）/ 班主任（教职工）/ 辅导员（教职工）等。<span class="hint" style="color:var(--danger)">管理员与"学院考勤负责老师"属于特权角色，仅超级管理员可创建，你（负责人）的界面中不会显示这两个选项，以防越权。</span></li>
+        <li><b>学生账号</b>（纪律委员/权益部）：选定角色后，系统从班级名单自动带出对应学生姓名，账号=学号，<b>初始密码=Hzpt@学号后六位</b>。</li>
+        <li><b>对纪律委员：勾选「可点名班级」</b>——这是关键一步！只有在这里勾选了他负责的班级，该纪律委员登录后才能对相应班级发起点名，否则会提示"暂无可点名的班级"。</li>
+        <li>点「生成账号」，账号立即生效，对方即可用学号+初始密码登录（首次登录强制改密）。</li>
+      </ol>
+
+      <h4 class="sub">② 编辑账号（调整角色 / 班级 / 姓名）</h4>
+      <p>在账号列表每行点「编辑」，可修改：姓名、<b>角色（可多选，支持多重身份）</b>、可点名班级。例如某同学既是纪律委员又是权益部，可同时勾选两个角色，权限自动合并。</p>
+
+      <h4 class="sub">③ 重置密码 / 停用 / 删除</h4>
+      <ul>
+        <li><b>重置密码</b>：同学忘记密码时，点「重置密码」恢复为初始密码（学生=Hzpt@学号后六位），再让其首次登录改密。</li>
+        <li><b>停用 / 启用</b>：毕业或离任可「停用」账号（停用后无法登录），需要时再启用，比删除更稳妥。</li>
+        <li><b>删除</b>：彻底移除账号（不可恢复，请谨慎）。你无法删除管理员或另一位学院考勤负责人的账号。</li>
+      </ul>
+
+      <h4 class="sub">④ 教职工名单</h4>
+      <p>切到「教职工名单」标签页，维护班主任、辅导员的工号、姓名、岗位、所带班级。生成班主任/辅导员账号时会从这里选择并自动带入信息。</p>
+
+      <div class="mock">
+        <div class="bar"><div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div><span>账号管理 · 新建纪律委员账号</span></div>
+        <div class="body" style="background:#fafbff;padding:16px">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px;max-width:520px;margin:0 auto;font-size:12.5px;color:var(--text-2)">
+            <div style="font-weight:700;margin-bottom:10px">新建账号</div>
+            <div class="field"><label>账号角色</label><span class="ctl">纪律委员（学生） ▾</span></div>
+            <div class="field"><label>选择学生（从名单带出）</label><span class="ctl">2025010012 张伟 ▾</span></div>
+            <div class="field"><label>可点名班级（仅纪律委员生效）</label><span class="ctl">☑ 软件2511 ☐ 物联2622 ☐ 人工智能2511</span></div>
+            <div style="color:var(--text-3);font-size:11px;margin:6px 0">初始密码将设为 Hzpt@010012，首次登录强制修改</div>
+            <div style="text-align:right"><span class="btn">生成账号</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="figure-label">图 5-1 · 为纪律委员开通账号并分配点名班级（关键步骤）</p>
+
+      <div class="flow">
+        <svg viewBox="0 0 940 120" width="940" height="120" xmlns="http://www.w3.org/2000/svg">
+          <defs><marker id="ar4" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/></marker></defs>
+          <g font-family="PingFang SC,Microsoft YaHei,sans-serif" font-size="12" text-anchor="middle">
+            <rect x="10" y="40" width="130" height="42" rx="9" fill="#cffafe" stroke="#0e7490"/><text x="75" y="58" fill="#155e75">账号管理</text><text x="75" y="73" fill="#155e75" font-size="10">新建账号</text>
+            <rect x="160" y="40" width="130" height="42" rx="9" fill="#cffafe" stroke="#0e7490"/><text x="225" y="58" fill="#155e75">选角色</text><text x="225" y="73" fill="#155e75" font-size="10">纪律委员</text>
+            <rect x="310" y="40" width="140" height="42" rx="9" fill="#cffafe" stroke="#0e7490"/><text x="380" y="58" fill="#155e75">勾选可点名班级</text><text x="380" y="73" fill="#155e75" font-size="10">关键权限</text>
+            <rect x="470" y="40" width="120" height="42" rx="9" fill="#dcfce7" stroke="#059669"/><text x="530" y="58" fill="#065f46">生成账号</text><text x="530" y="73" fill="#065f46" font-size="10">学号登录</text>
+            <rect x="620" y="40" width="140" height="42" rx="9" fill="#ecf1ff" stroke="#2f6bff"/><text x="690" y="58" fill="#1e40af">同学首次登录</text><text x="690" y="73" fill="#1e40af" font-size="10">强制改密</text>
+            <rect x="780" y="40" width="150" height="42" rx="9" fill="#dbeafe" stroke="#1d4ed8"/><text x="855" y="58" fill="#1e40af">即可发起点名</text><text x="855" y="73" fill="#1e40af" font-size="10">正常履职</text>
+            <line x1="140" y1="61" x2="157" y2="61" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar4)"/>
+            <line x1="290" y1="61" x2="307" y2="61" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar4)"/>
+            <line x1="450" y1="61" x2="467" y2="61" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar4)"/>
+            <line x1="590" y1="61" x2="617" y2="61" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar4)"/>
+            <line x1="760" y1="61" x2="777" y2="61" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar4)"/>
+          </g>
+        </svg>
+        <div class="flow-cap">学院考勤负责人开通纪律委员账号：分配班级权限是让他能点名的关键</div>
+      </div>
+
+      <h3 id="s5b">5.2 院级业务操作（名单 / 点名 / 假单 / 统计）</h3>
+      <p>学院考勤负责人对「班级名单、考勤点名、假单管理、数据统计」拥有<b>全院范围</b>的权限（不限班级），操作方式与权益部一致，区别仅在于你能看到并处理所有班级的数据：</p>
+      <ul>
+        <li><b>班级名单</b>：查看/导入/维护全院各班级学生。</li>
+        <li><b>考勤点名</b>：可对任一班级发起点名，也可进入任意记录更正考勤状态。</li>
+        <li><b>假单管理</b>：导入/核对全院假单，重新应用或删除。</li>
+        <li><b>数据统计</b>：查看全院到课率与缺勤统计并导出报表。</li>
+      </ul>
+      <div class="note info"><span class="ico">i</span><div><b>与权益部的区别</b>：权益部能做的你都能做，且不受班级限制；你独有的权限是「账号管理」（开通/分配一线账号）。数据备份（数据管理）仅管理员可用，如需定期备份请协调管理员。</div></div>
+    </div>
+
+    <!-- ============ 六、关键业务规则 ============ -->
+    <div class="section" id="s6">
+      <h2><span class="num">6</span>六、关键业务规则（务必了解）</h2>
+      <h3>6.1 假单如何"生效"对账考勤</h3>
+      <p>系统判定逻辑（权益部/负责人调整过上课时间段基准后同样适用）：</p>
+      <ul>
+        <li>当一条假单的请假时间段<b>完整包含</b>某节课的上课时间，该节课的考勤为「缺勤」时 → 系统自动改为「请假」并备注假别与事由。</li>
+        <li>若某条已登记「请假」但<b>未被任何假单覆盖</b>（例如手误标记或假单被删）→ 系统自动改回「缺勤」。</li>
+        <li>因此：导入假单后无需手工逐条改考勤，系统会对账；发现遗漏可点「重新应用」立即套用。</li>
+      </ul>
+
+      <h3>6.2 点名记录的"锁定"与"更正"</h3>
+      <ul>
+        <li><b>纪律委员</b>提交后记录对其本人为<b>只读锁定</b>，保证录入责任清晰。</li>
+        <li><b>权益部 / 学院考勤负责人 / 管理员</b>可在详情页修改任意学生的考勤状态并保存，保存后系统再次按假单复核。</li>
+      </ul>
+
+      <h3>6.3 任课老师确认"一次永久有效"</h3>
+      <p>任课老师通过确认链接签字后，记录即标记为「已确认」，并显示确认人、时间与手写签名。老师<b>只需签字一次</b>；此后考勤状态被更正，该次确认依然有效（更正不会抹掉老师的原始确认）。</p>
+
+      <h3>6.4 考勤状态与颜色图例</h3>
+      <div class="legend-row">
+        <span class="lg"><span class="tag tag-green">出勤</span> 正常到课</span>
+        <span class="lg"><span class="tag tag-orange">迟到</span> 晚于上课到课</span>
+        <span class="lg"><span class="tag tag-red">缺勤</span> 未到（最终判定）</span>
+        <span class="lg"><span class="tag tag-blue">请假</span> 被有效假单覆盖</span>
+      </div>
+      <h3>6.5 假别图例</h3>
+      <div class="legend-row">
+        <span class="lg"><span class="tag tag-blue">公假</span></span>
+        <span class="lg"><span class="tag tag-orange">病假</span></span>
+        <span class="lg"><span class="tag tag-gray">事假</span></span>
+        <span class="lg"><span class="tag tag-gray">其他</span></span>
+      </div>
+    </div>
+
+    <!-- ============ 七、FAQ ============ -->
+    <div class="section" id="s7">
+      <h2><span class="num">7</span>七、常见问题 FAQ</h2>
+      <div class="faq">
+        <details><summary>纪律委员：点「发起点名」后提示"暂无可点名的班级"？</summary>
+          <div class="ans">你的账号还没被分配班级权限。请联系学院考勤负责人在「账号管理 → 编辑你的账号 → 勾选可点名班级」后重试。</div></details>
+        <details><summary>权益部：假单导入后，某个同学仍显示"缺勤"没变成"请假"？</summary>
+          <div class="ans">可能原因：① 该生当天该节次本就没有点名记录（假单无考勤可套用，显示"未生效"）；② 假单时间段未完整覆盖该节课上课时间（检查"上课时间段设置"）；③ 学号/姓名与名单不一致导致未匹配。可点该假单「重新应用」或核对名单与时间段。</div></details>
+        <details><summary>权益部：导入假单提示"名单外跳过"很多条？</summary>
+          <div class="ans">说明这些学生的学号/姓名在班级名单中找不到。请先确认「班级名单」已正确导入，且 Excel 中的学号、姓名、班级与名单完全一致（注意全角/半角、多余空格）。修正后重新导入即可。</div></details>
+        <details><summary>学院考勤负责人：我能创建管理员账号吗？</summary>
+          <div class="ans">不能。管理员与"学院考勤负责老师"属于特权角色，仅超级管理员可创建/编辑/删除，你的界面中不会出现这两个角色的创建选项，这是系统的防越权设计。</div></details>
+        <details><summary>同学忘了密码怎么办？</summary>
+          <div class="ans">学院考勤负责人或管理员在「账号管理」中对该账号点「重置密码」，恢复为初始密码（学生=Hzpt@学号后六位），同学再次登录时会被要求强制修改。</div></details>
+        <details><summary>记录提交后发现记错了，能改吗？</summary>
+          <div class="ans">纪律委员提交后记录对其本人只读。请通知权益部或学院考勤负责人进入「点名详情」修改对应学生状态并保存，系统会自动重新复核假单。</div></details>
+        <details><summary>数据会丢吗？如何备份？</summary>
+          <div class="ans">数据保存在学院云端服务器，日常操作不会丢失。但为防极端情况，管理员可通过「数据管理」手动备份，或开启"定时自动备份"。建议重要节点（如月末）由管理员导出一份备份留存。</div></details>
+        <details><summary>手机能用吗？</summary>
+          <div class="ans">可以。系统适配手机浏览器与微信内置浏览器，菜单在手机上以上下抽屉形式呈现，操作逻辑与电脑一致。</div></details>
+      </div>
+    </div>
+
+    <!-- ============ 八、附录 ============ -->
+    <div class="section" id="s8">
+      <h2><span class="num">8</span>八、附录与术语</h2>
+      <h3>8.1 术语表</h3>
+      <table class="tbl">
+        <thead><tr><th>术语</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>节次</td><td>一天的课程时段，固定为 1-2节 / 3-4节 / 5-6节 / 7-8节</td></tr>
+          <tr><td>到课率</td><td>（出勤 + 迟到）÷ 应到人次，衡量出勤水平的指标</td></tr>
+          <tr><td>假单生效</td><td>请假时间段完整包含某节课上课时间，系统把该节缺勤自动改判为请假</td></tr>
+          <tr><td>确认链接</td><td>点名记录专属链接，发给任课老师免登录签字确认</td></tr>
+          <tr><td>可点名班级</td><td>纪律委员账号被授权可发起点名的班级集合</td></tr>
+          <tr><td>特权角色</td><td>管理员、学院考勤负责老师；仅超级管理员可创建/管理</td></tr>
+        </tbody>
+      </table>
+
+      <h3>8.2 角色标签颜色速查</h3>
+      <div class="legend-row">
+        <span class="lg"><span class="tag tag-red">管理员</span></span>
+        <span class="lg"><span class="tag tag-cyan">学院考勤负责老师</span></span>
+        <span class="lg"><span class="tag tag-blue">权益部</span></span>
+        <span class="lg"><span class="tag tag-green">纪律委员</span></span>
+        <span class="lg"><span class="tag tag-purple">班主任</span></span>
+        <span class="lg"><span class="tag tag-orange">辅导员</span></span>
+      </div>
+
+      <h3>8.3 初始账号与密码（开箱即用）</h3>
+      <table class="tbl">
+        <thead><tr><th>账号</th><th>初始密码</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>admin</code></td><td><code>admin123</code></td><td>系统管理员（请立即改密）</td></tr>
+          <tr><td>学号（学生）</td><td><code>Hzpt@学号后六位</code></td><td>纪律委员 / 权益部登录</td></tr>
+          <tr><td>工号（教职工）</td><td><code>Hzpt@工号</code></td><td>班主任 / 辅导员登录</td></tr>
+        </tbody>
+      </table>
+
+      <div class="note danger"><span class="ico">!</span><div><b>安全提示</b>：所有初始密码都包含固定前缀 <code>Hzpt@</code>，首次登录后会强制要求修改。请勿在群聊中明文发送他人密码；建议单独私信告知，并提醒对方尽快改密。</div></div>
+
+      <hr>
+      <p style="color:var(--text-2)">本手册依据「学生考勤工作台 2.1」编写，覆盖纪律委员、权益部、学院考勤负责人三类一线角色的日常操作。如系统后续升级导致界面变化，请以线上实际界面为准；本手册结构清晰、样式内联，可直接在此基础上修改补充。</p>
+    </div>
+
+    <div class="footer">学生考勤工作台 2.1 · 用户操作手册 ｜ 编制 2026-09-28 ｜ 内联样式单文件，可直接分享与二次编辑</div>
+  </main>
+</div>
+
+</body>
+</html>

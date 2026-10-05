@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>设计分享 · 考勤工作台 — PC 端</title>
+<style>
+  :root{
+    --bg-grad: linear-gradient(155deg,#E9F1FF 0%,#EEEBFF 48%,#F2ECFF 100%);
+    --card: rgba(255,255,255,.66);
+    --card-strong: rgba(255,255,255,.86);
+    --stroke: rgba(255,255,255,.75);
+    --line: rgba(120,130,170,.14);
+    --ink: #2B3350;
+    --ink-2: #5A6484;
+    --ink-3: #9AA3BF;
+    --blue: #5B7CFA;
+    --blue-deep: #4A6CF7;
+    --purple: #9B8CFF;
+    --green: #2E9E5B;  --green-bg: #E3F6EC;
+    --red: #D6455D;    --red-bg: #FDE9EE;
+    --orange: #D97A22; --orange-bg: #FFF3E2;
+    --cyan: #2B9BB4;   --cyan-bg: #E2F5F9;
+    --r-lg: 24px; --r-md: 16px; --r-sm: 10px;
+    --shadow-card: 0 6px 22px rgba(112,124,210,.10), 0 1px 3px rgba(112,124,210,.06);
+    --shadow-soft: 0 3px 10px rgba(112,124,210,.10);
+    --neu: 6px 6px 14px rgba(166,177,214,.22), -6px -6px 14px rgba(255,255,255,.85);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:1242px;height:1656px;overflow:hidden;}
+  body{font-family:-apple-system,"PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;color:var(--ink);background:#F4F6FC;}
+  .cover{width:1242px;height:1656px;display:flex;flex-direction:column;}
+
+  /* ───── 标题带 ───── */
+  .title-band{height:252px;background:#F7F9FF;display:flex;flex-direction:column;justify-content:center;padding:0 72px;position:relative;}
+  .title-band::after{content:'';position:absolute;left:72px;right:72px;bottom:0;height:1px;background:linear-gradient(90deg,transparent,rgba(120,130,170,.18),transparent);}
+  .t-main{font-size:84px;font-weight:800;letter-spacing:2px;line-height:1.15;color:#1E2438;}
+  .t-main .accent{color:var(--blue-deep);}
+  .t-row{margin-top:18px;display:flex;align-items:center;justify-content:space-between;}
+  .t-sub{font-size:24px;color:var(--ink-3);letter-spacing:6px;font-weight:500;}
+  .t-chip{display:flex;gap:10px;}
+  .t-chip span{font-size:18px;font-weight:600;color:var(--blue-deep);background:rgba(91,124,250,.10);border:1px solid rgba(91,124,250,.22);padding:8px 20px;border-radius:999px;}
+
+  /* ───── UI 画布 ───── */
+  .ui-area{flex:1;background:var(--bg-grad);position:relative;padding:26px 30px 34px;display:flex;flex-direction:column;gap:18px;overflow:hidden;}
+  .ui-area::before{content:'';position:absolute;width:560px;height:560px;border-radius:50%;background:radial-gradient(circle,rgba(155,140,255,.16),transparent 65%);top:-140px;right:-100px;}
+  .ui-area::after{content:'';position:absolute;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle,rgba(91,124,250,.13),transparent 65%);bottom:-160px;left:-120px;}
+
+  /* 顶栏 */
+  .topbar{height:64px;display:flex;align-items:center;gap:16px;position:relative;z-index:2;}
+  .logo{display:flex;align-items:center;gap:12px;}
+  .logo-ic{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-soft);}
+  .logo-ic svg{width:22px;height:22px;stroke:#fff;}
+  .logo b{font-size:21px;letter-spacing:1px;}
+  .logo small{font-size:13px;color:var(--ink-3);display:block;letter-spacing:2px;}
+  .top-spacer{flex:1;}
+  .search{width:300px;height:42px;border-radius:999px;background:var(--card);backdrop-filter:blur(14px);border:1px solid var(--stroke);box-shadow:var(--shadow-soft);display:flex;align-items:center;gap:10px;padding:0 18px;color:var(--ink-3);font-size:15px;}
+  .icon-btn{width:42px;height:42px;border-radius:13px;background:var(--card);backdrop-filter:blur(14px);border:1px solid var(--stroke);box-shadow:var(--shadow-soft);display:flex;align-items:center;justify-content:center;position:relative;}
+  .icon-btn svg{width:19px;height:19px;stroke:var(--ink-2);}
+  .dot{position:absolute;top:9px;right:10px;min-width:17px;height:17px;border-radius:999px;background:#F0616F;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;border:2px solid #FDFDFF;}
+  .user{display:flex;align-items:center;gap:10px;background:var(--card);backdrop-filter:blur(14px);border:1px solid var(--stroke);box-shadow:var(--shadow-soft);border-radius:999px;padding:5px 16px 5px 6px;}
+  .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#8FA8FF,#B7A6FF);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700;}
+  .user span{font-size:15px;font-weight:600;color:var(--ink-2);}
+
+  /* 布局 */
+  .layout{flex:1;display:flex;gap:18px;position:relative;z-index:2;min-height:0;}
+
+  /* 侧边栏 */
+  .sidebar{width:216px;background:var(--card-strong);backdrop-filter:blur(20px);border:1px solid var(--stroke);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:20px 14px;display:flex;flex-direction:column;gap:6px;}
+  .side-cap{font-size:12px;color:var(--ink-3);letter-spacing:3px;padding:6px 12px 10px;}
+  .nav-item{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:14px;font-size:16px;font-weight:500;color:var(--ink-2);cursor:pointer;transition:all .18s ease;}
+  .nav-item svg{width:19px;height:19px;stroke:var(--ink-3);}
+  .nav-item:hover{background:rgba(91,124,250,.08);color:var(--blue-deep);}
+  .nav-item.active{background:linear-gradient(135deg,var(--blue),#7E8BFF);color:#fff;font-weight:700;box-shadow:0 6px 16px rgba(91,124,250,.35);}
+  .nav-item.active svg{stroke:#fff;}
+  .nav-item .badge{margin-left:auto;font-size:11px;font-weight:700;color:var(--blue-deep);background:rgba(91,124,250,.12);border-radius:999px;padding:2px 8px;}
+  .nav-item.active .badge{background:rgba(255,255,255,.25);color:#fff;}
+  .side-foot{margin-top:auto;border-top:1px solid var(--line);padding-top:12px;}
+
+  /* 主区 */
+  .main{flex:1;display:flex;flex-direction:column;gap:16px;min-width:0;}
+  .hi-row{display:flex;align-items:flex-end;justify-content:space-between;}
+  .hi-row h2{font-size:27px;font-weight:800;letter-spacing:.5px;}
+  .hi-row p{font-size:14px;color:var(--ink-3);margin-top:6px;letter-spacing:1px;}
+  .todo-pill{display:flex;align-items:center;gap:10px;background:var(--card);backdrop-filter:blur(14px);border:1px solid var(--stroke);border-radius:999px;box-shadow:var(--shadow-soft);padding:10px 20px;font-size:15px;color:var(--ink-2);}
+  .todo-pill b{color:var(--blue-deep);font-size:18px;}
+
+  /* 统计卡 */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
+  .stat{background:var(--card);backdrop-filter:blur(18px);border:1px solid var(--stroke);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:20px 22px;position:relative;overflow:hidden;transition:transform .18s ease,box-shadow .18s ease;}
+  .stat:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(112,124,210,.16);}
+  .stat .ic{width:44px;height:44px;border-radius:14px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;}
+  .stat .ic svg{width:21px;height:21px;}
+  .ic.b1{background:rgba(91,124,250,.14);}  .ic.b1 svg{stroke:var(--blue-deep);}
+  .ic.b2{background:rgba(155,140,255,.16);} .ic.b2 svg{stroke:#7A68E8;}
+  .ic.b3{background:rgba(240,97,111,.12);}  .ic.b3 svg{stroke:#E05A6C;}
+  .ic.b4{background:rgba(46,158,91,.12);}   .ic.b4 svg{stroke:#2E9E5B;}
+  .stat .num{font-size:34px;font-weight:800;letter-spacing:.5px;font-variant-numeric:tabular-nums;}
+  .stat .num small{font-size:16px;font-weight:600;color:var(--ink-3);margin-left:2px;}
+  .stat .lbl{font-size:14px;color:var(--ink-3);margin-top:4px;letter-spacing:1px;}
+  .stat .trend{position:absolute;top:20px;right:20px;font-size:13px;font-weight:700;padding:4px 10px;border-radius:999px;}
+  .trend.up{color:var(--green);background:var(--green-bg);}
+  .trend.down{color:var(--red);background:var(--red-bg);}
+  .trend.warn{color:var(--orange);background:var(--orange-bg);}
+
+  /* 中排：图表 + 待办 */
+  .mid{display:grid;grid-template-columns:1.55fr 1fr;gap:16px;flex:1;min-height:0;}
+  .card{background:var(--card);backdrop-filter:blur(18px);border:1px solid var(--stroke);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:22px 24px;display:flex;flex-direction:column;min-height:0;}
+  .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+  .card-head h3{font-size:18px;font-weight:700;letter-spacing:.5px;}
+  .card-head .more{font-size:13px;color:var(--ink-3);}
+  .legend{display:flex;gap:14px;font-size:12.5px;color:var(--ink-3);margin:2px 0 10px;}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;}
+  .chart{flex:1;display:flex;align-items:flex-end;gap:18px;padding:6px 4px 0;}
+  .bar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;height:100%;justify-content:flex-end;}
+  .bar-stack{width:34px;display:flex;flex-direction:column;justify-content:flex-end;border-radius:10px;overflow:hidden;background:rgba(120,130,170,.08);}
+  .bar-a{background:linear-gradient(180deg,#7E8BFF,var(--blue));border-radius:10px 10px 0 0;}
+  .bar-b{background:linear-gradient(180deg,#C9BEFF,var(--purple));opacity:.85;}
+  .bar-col .d{font-size:12.5px;color:var(--ink-3);}
+  .bar-col.today .d{color:var(--blue-deep);font-weight:700;}
+
+  /* 待办卡 */
+  .todo-list{display:flex;flex-direction:column;gap:12px;margin-top:6px;}
+  .todo{display:flex;align-items:center;gap:14px;background:var(--card-strong);border:1px solid var(--stroke);border-radius:var(--r-md);padding:14px 16px;box-shadow:0 2px 8px rgba(112,124,210,.07);transition:transform .18s ease;}
+  .todo:hover{transform:translateX(3px);}
+  .todo .n{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;}
+  .todo b{font-size:15.5px;display:block;}
+  .todo small{font-size:12.5px;color:var(--ink-3);}
+  .todo .go{margin-left:auto;color:var(--ink-3);font-size:18px;}
+
+  /* 表格卡 */
+  .table-card{flex:1;min-height:0;}
+  .tabs{display:flex;gap:8px;margin:4px 0 14px;}
+  .tab{font-size:14px;font-weight:600;color:var(--ink-2);background:rgba(120,130,170,.08);border-radius:999px;padding:8px 20px;cursor:pointer;transition:all .18s ease;}
+  .tab:hover{background:rgba(91,124,250,.12);color:var(--blue-deep);}
+  .tab.on{background:linear-gradient(135deg,var(--blue),#7E8BFF);color:#fff;box-shadow:0 4px 12px rgba(91,124,250,.3);}
+  .tab .c{font-size:12px;opacity:.85;margin-left:4px;}
+  table{width:100%;border-collapse:collapse;}
+  thead th{font-size:13px;font-weight:600;color:var(--ink-3);text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);letter-spacing:1px;}
+  tbody td{font-size:14.5px;padding:13px 12px;border-bottom:1px solid var(--line);color:var(--ink-2);font-variant-numeric:tabular-nums;}
+  tbody tr{transition:background .15s ease;}
+  tbody tr:hover{background:rgba(91,124,250,.05);}
+  tbody tr:last-child td{border-bottom:none;}
+  td.name{font-weight:600;color:var(--ink);}
+  .tag{display:inline-block;font-size:12.5px;font-weight:600;padding:4px 12px;border-radius:999px;}
+  .tag.red{color:var(--red);background:var(--red-bg);}
+  .tag.orange{color:var(--orange);background:var(--orange-bg);}
+  .tag.blue{color:var(--blue-deep);background:#E8EFFF;}
+  .tag.cyan{color:var(--cyan);background:var(--cyan-bg);}
+  .op{color:var(--blue-deep);font-weight:600;font-size:13.5px;}
+  .op+.op{margin-left:12px;}
+  .op.mute{color:var(--ink-3);font-weight:500;}
+
+  .foot-note{position:relative;z-index:2;text-align:center;font-size:13px;color:rgba(90,100,140,.55);letter-spacing:3px;}
+</style>
+</head>
+<body>
+<div class="cover">
+
+  <!-- 标题带 -->
+  <div class="title-band">
+    <div class="t-main">设计分享 · <span class="accent">考勤工作台</span></div>
+    <div class="t-row">
+      <div class="t-sub">PC 端界面设计方案 · 新拟态 × 轻毛玻璃</div>
+      <div class="t-chip"><span>Neumorphism</span><span>Glassmorphism</span></div>
+    </div>
+  </div>
+
+  <!-- UI 画布 -->
+  <div class="ui-area">
+
+    <!-- 顶部全局导航 -->
+    <div class="topbar">
+      <div class="logo">
+        <div class="logo-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></div>
+        <div><b>学生考勤工作台</b><small>ATTENDANCE CONSOLE</small></div>
+      </div>
+      <div class="top-spacer"></div>
+      <div class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9AA3BF" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>搜索学生 / 班级 / 假单…</div>
+      <div class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M18 9a6 6 0 10-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.5 20a2 2 0 003 0"/></svg><i class="dot">3</i></div>
+      <div class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M21 11.5a8.4 8.4 0 01-9 8.4 8.6 8.6 0 01-3.8-.9L3 20l1-4.9a8.4 8.4 0 112.5-13A8.4 8.4 0 0121 11.5z"/></svg></div>
+      <div class="user"><div class="avatar">管</div><span>管理员 · 李老师</span></div>
+    </div>
+
+    <div class="layout">
+
+      <!-- 左侧固定侧边导航 -->
+      <div class="sidebar">
+        <div class="side-cap">工 作 台</div>
+        <div class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>工作台</div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></svg>考勤点名<span class="badge">今日</span></div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>假单管理<span class="badge">3</span></div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>数据统计</div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M3 11l17-7-4 16-6-4-3 4-1-6z"/></svg>缺勤公示</div>
+        <div class="side-cap" style="padding-top:14px">管 理</div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.5c2.8 0 5 2.2 5 5"/></svg>账号管理</div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5V12c0 1.7 3.6 3 8 3s8-1.3 8-3V5.5M4 12v6.5c0 1.7 3.6 3 8 3s8-1.3 8-3V12"/></svg>数据管理</div>
+        <div class="side-foot">
+          <div class="nav-item" style="color:var(--ink-3)"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 00-2-1.2L14 3h-4l-.5 2.6a7 7 0 00-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 005 12a7 7 0 00.1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 002 1.2L10 21h4l.5-2.6a7 7 0 002-1.2l2.4 1 2-3.4-2-1.6A7 7 0 0019 12z"/></svg>系统设置</div>
+        </div>
+      </div>
+
+      <!-- 主内容区 -->
+      <div class="main">
+        <div class="hi-row">
+          <div>
+            <h2>2026年10月2日 · 星期五</h2>
+            <p>早上好，李老师 —— 今日 4 个班级已完成 3 节点名</p>
+          </div>
+          <div class="todo-pill">待处理<b>5</b>项 · 假单审批 3 / 点名确认 2 <span style="color:var(--ink-3)">›</span></div>
+        </div>
+
+        <!-- 数据概览统计卡 -->
+        <div class="stats">
+          <div class="stat">
+            <div class="ic b1"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M21 11.5a8.5 8.5 0 11-4.5-7.5"/><path d="M9 11.5l2.5 2.5L21 4.5"/></svg></div>
+            <div class="num">96.8<small>%</small></div>
+            <div class="lbl">今日出勤率</div>
+            <div class="trend up">▲ 1.2%</div>
+          </div>
+          <div class="stat">
+            <div class="ic b2"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.5c2.8 0 5 2.2 5 5"/></svg></div>
+            <div class="num">182<small>/187</small></div>
+            <div class="lbl">实到人数 · 4 班</div>
+            <div class="trend up">全勤 3 班</div>
+          </div>
+          <div class="stat">
+            <div class="ic b3"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg></div>
+            <div class="num">7.5<small>节</small></div>
+            <div class="lbl">今日缺勤节数</div>
+            <div class="trend down">▼ 2 人</div>
+          </div>
+          <div class="stat">
+            <div class="ic b4"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+            <div class="num">2<small>次</small></div>
+            <div class="lbl">迟到 · 折 1.0 节</div>
+            <div class="trend warn">待确认 1</div>
+          </div>
+        </div>
+
+        <!-- 图表卡 + 待办卡 -->
+        <div class="mid">
+          <div class="card">
+            <div class="card-head"><h3>近 7 日出勤趋势</h3><span class="more">查看报表 ›</span></div>
+            <div class="legend"><span><i style="background:#5B7CFA"></i>出勤节数</span><span><i style="background:#B7A6FF"></i>缺勤节数</span><span style="margin-left:auto">单位：节</span></div>
+            <div class="chart">
+              <div class="bar-col"><div class="bar-stack" style="height:100%"><div class="bar-b" style="height:12%"></div><div class="bar-a" style="height:82%"></div></div><div class="d">09-26</div></div>
+              <div class="bar-col"><div class="bar-stack" style="height:100%"><div class="bar-b" style="height:9%"></div><div class="bar-a" style="height:85%"></div></div><div class="d">09-27</div></div>
+              <div class="bar-col"><div class="bar-stack" style="height:100%"><div class="bar-b" style="height:16%"></div><div class="bar-a" style="height:78%"></div></div><div class="d">09-28</div></div>
+              <div class="bar-col"><div class="bar-stack" style="height:100%"><div class="bar-b" style="height:7%"></div><div class="bar-a" style="height:88%"></div></div><div class="d">09-29</div></div>
+              <div class="bar-col"><div class="bar-stack" style="height:100%"><div class="bar-b" style="height:11%"></div><div class="bar-a" style="height:84%"></div></div><div class="d">09-30</div></div>
+              <div class="bar-col"><div class="bar-stack" style="height:100%"><div class="bar-b" style="height:14%"></div><div class="bar-a" style="height:80%"></div></div><div class="d">10-01</div></div>
+              <div class="bar-col today"><div class="bar-stack" style="height:100%"><div class="bar-b" style="height:8%"></div><div class="bar-a" style="height:87%"></div></div><div class="d">今日</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>今日待办</h3><span class="more">全部 ›</span></div>
+            <div class="todo-list">
+              <div class="todo"><div class="n" style="background:linear-gradient(135deg,#5B7CFA,#7E8BFF)">审</div><div><b>假单审批 · 3 份</b><small>人工智能2511 / 软件2511</small></div><span class="go">›</span></div>
+              <div class="todo"><div class="n" style="background:linear-gradient(135deg,#9B8CFF,#B7A6FF)">名</div><div><b>7-8 节点名确认 · 2 项</b><small>等待任课老师签字确认</small></div><span class="go">›</span></div>
+              <div class="todo"><div class="n" style="background:linear-gradient(135deg,#5BC4A8,#7ED8C0)">备</div><div><b>数据自动备份已完成</b><small>14:00 · 第 128 份 · 校验通过</small></div><span class="go">›</span></div>
+              <div class="todo"><div class="n" style="background:linear-gradient(135deg,#F0A24B,#F5BE7E)">示</div><div><b>本周缺勤公示已发布</b><small>免登录链接已同步班级群</small></div><span class="go">›</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 数据表格卡 -->
+        <div class="card table-card">
+          <div class="card-head"><h3>今日缺勤记录</h3>
+            <div class="tabs" style="margin:0">
+              <span class="tab on">全部<span class="c">9</span></span>
+              <span class="tab">缺勤<span class="c">7</span></span>
+              <span class="tab">迟到<span class="c">2</span></span>
+              <span class="tab" style="background:rgba(46,158,91,.10);color:var(--green)">已闭环</span>
+            </div>
+          </div>
+          <table>
+            <thead><tr><th style="width:52px">序号</th><th>班级</th><th>学号</th><th>姓名</th><th>节次</th><th>类型</th><th>节数</th><th>状态</th><th style="width:130px">操作</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>人工智能2511</td><td>2025***12</td><td class="name">陈*然</td><td>3-4 节</td><td><span class="tag red">缺勤</span></td><td>2.0</td><td><span class="tag blue">待确认</span></td><td><span class="op">详情</span><span class="op">改判</span></td></tr>
+              <tr><td>2</td><td>软件2511</td><td>2025***07</td><td class="name">刘*宇</td><td>早自习</td><td><span class="tag cyan">早晚自习</span></td><td>1.0</td><td><span class="tag blue">待确认</span></td><td><span class="op">详情</span><span class="op">改判</span></td></tr>
+              <tr><td>3</td><td>物联2622</td><td>2026***21</td><td class="name">张*涵</td><td>1-2 节</td><td><span class="tag orange">迟到</span></td><td>0.5</td><td><span class="tag orange" style="background:rgba(217,122,34,.12)">已记录</span></td><td><span class="op">详情</span><span class="op mute">申诉</span></td></tr>
+              <tr><td>4</td><td>人工智能2502</td><td>2025***33</td><td class="name">王*琪</td><td>晚自习</td><td><span class="tag cyan">早晚自习</span></td><td>1.0</td><td><span class="tag blue">假单覆盖</span></td><td><span class="op">详情</span><span class="op">恢复</span></td></tr>
+              <tr><td>5</td><td>软件2511</td><td>2025***15</td><td class="name">李*泽</td><td>5-6 节</td><td><span class="tag red">缺勤</span></td><td>2.0</td><td><span class="tag orange" style="background:rgba(217,122,34,.12)">已闭环</span></td><td><span class="op">详情</span><span class="op mute">归档</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot-note">STUDENT ATTENDANCE CONSOLE · UI DESIGN CONCEPT · 2026</div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# 运行时数据目录占位文件（保留，使空目录可纳入版本控制）。
+#
+# 首次启动应用时，store 会自动：
+#   1. 创建管理员账号 admin / admin123（若 data/users.json 缺失或损坏）
+#   2. 初始化空的 data/*.json 业务集合（students / attendance / leaves / tokens ...）
+#
+# 真实业务数据不会提交到仓库（见根目录 .gitignore 的 data/* 规则）。
