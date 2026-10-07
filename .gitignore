@@ -21,3 +21,7 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 验证脚本的编译缓存（scripts/*.py 运行/编译产生）
+__pycache__/
+*.pyc

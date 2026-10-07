@@ -767,6 +767,8 @@ const CLASS_POST_FIELDS = [
   { key: 'counselor', studentField: 'counselor', label: '辅导员' },
   { key: 'disciplineMember', studentField: 'disciplineMember', label: '纪律委员' },
 ];
+// 修改73：学生记录上的岗位字段 → 中文标签（导入提示 / 变更明细用）
+const POST_LABEL = { classTeacher: '班主任', counselor: '辅导员', disciplineMember: '纪律委员' };
 
 /** 班级名归一：去全角/半角空格与零宽字符（防止「软件2301班 」与「软件2301班」裂成两个班） */
 function normClassName(v) {
@@ -821,28 +823,20 @@ function classUnionNames() {
   for (const s of store.db.students) if (s && s.className) set.add(String(s.className).trim());
   return [...set].filter(Boolean).sort((a, b) => a.localeCompare(b, 'zh'));
 }
-/** 自动建班：学生导入遇到未登记班级时调用，标记为「待补信息」，不阻断导入 */
-function ensureClass(name, operator, source) {
-  const nm = normClassName(name);
-  if (!nm) return null;
-  const exist = classRecordOf(nm);
-  if (exist) return { class: exist, created: false };
-  const rec = {
-    id: uid('cls'),
-    name: nm,
-    grade: '',
-    major: '',
-    headTeacher: { name: '', staffId: '' },
-    counselor: { name: '', staffId: '' },
-    disciplineMember: { name: '', studentId: '' },
-    status: 'incomplete',
-    source: source || 'import',
-    updatedAt: nowISO(),
-    updatedBy: operator ? operator.name : '',
-  };
-  store.db.classes.push(rec);
-  store.save('classes');
-  return { class: rec, created: true };
+// 修改73：班级准入（写入前校验）—— 班级管理是班级信息的唯一权威源。
+// 旧行为：学生名单导入 / 单条新增遇到未登记班级时自动建档（标记「待补信息」），
+// 结果是名单里可以出现「班级管理中并不存在」的班级，两处口径分裂、无法治理。
+// 新规则：一律拒绝未登记班级 —— 需先到「班级管理」建档，再导入名单。
+const CLASS_MISMATCH_MSG = '因为班级名称同班级管理中已设置的班级信息不一致，请检查';
+/** 班级准入校验。返回 { ok, name, rec, reason }：
+ *  - ok=true：name 为班级管理中的权威班级名（空格 / 大小写差异已消除，可直接写库）
+ *  - ok=false：reason 为面向用户的明确原因（携带班级名，可定位到具体行 / 班级） */
+function checkClassRegistered(rawName) {
+  const nm = normClassName(rawName);
+  if (!nm) return { ok: false, name: '', reason: '班级不能为空' };
+  const rec = classRecordOf(nm);
+  if (!rec) return { ok: false, name: nm, reason: `${CLASS_MISMATCH_MSG}（表中班级「${nm}」）` };
+  return { ok: true, name: normClassName(rec.name), rec };
 }
 
 /** 修改35：班级名单匹配。判定条件 = trim 后与班级名单中的 className 完全一致（不区分大小写）。
@@ -1843,10 +1837,13 @@ route('POST', '/api/students', { roles: ['admin', 'rights', 'collegeOfficer'] },
   const name = String(body.name || '').trim();
   const studentId = String(body.studentId || '').trim();
   if (!className || !name || !studentId) fail(400, '班级、姓名、学号为必填项');
-  if (store.db.students.some((s) => s.className === className && s.studentId === studentId)) fail(400, '该班级下已存在相同学号的学生');
+  // 修改73：班级准入 —— 未登记班级不再自动建档，直接拒绝并给出可定位的原因
+  const gate = checkClassRegistered(className);
+  if (!gate.ok) fail(400, gate.reason);
+  if (store.db.students.some((s) => normClassName(s.className).toLowerCase() === gate.name.toLowerCase() && s.studentId === studentId)) fail(400, '该班级下已存在相同学号的学生');
   const stu = {
     id: uid('stu'),
-    className,
+    className: gate.name,
     name,
     studentId,
     grade: String(body.grade || '').trim(),
@@ -1854,8 +1851,7 @@ route('POST', '/api/students', { roles: ['admin', 'rights', 'collegeOfficer'] },
     counselor: String(body.counselor || '').trim(),
     classTeacher: String(body.classTeacher || '').trim(),
   };
-  // 修改72：三岗位以「班级管理」为权威源；未登记班级自动建班并标记「待补信息」
-  ensureClass(className, user, 'import');
+  // 修改72：三岗位以「班级管理」为权威源（只读镜像）
   applyClassPosts(stu);
   store.db.students.push(stu);
   store.save('students');
@@ -1869,59 +1865,101 @@ route('POST', '/api/students/import', { roles: ['admin', 'rights', 'collegeOffic
   const notices = [];
   let inserted = 0;
   let updated = 0;
-  const autoCreated = new Set();
+  let unchanged = 0;
+  let skipped = 0;
+
+  // 修改74：逐条校验、逐条处理 —— 班级不匹配的行**跳过该条并继续**，不再整批中止
+  // （修改73 的"任一行不匹配即零写入"在真实名单里过于严苛：一个班名写法差异会挡住其余全部数据）。
+  // 跳过行汇入 errors（含行号 + 班级名 + 原因），导入结束后由前端汇总展示；
+  // 其余校验规则不变：班级 / 姓名 / 学号必填，统计口径与真实写库严格一致（修改73）。
   rows.forEach((r, idx) => {
     const rowNo = idx + 2; // 模板首行为表头
-    const className = String(r['班级'] || '').trim();
+    const rawClass = String(r['班级'] || '').trim();
     const name = String(r['姓名'] || '').trim();
     const studentId = String(r['学号'] || '').trim();
-    if (!className || !name || !studentId) {
-      errors.push({ row: rowNo, message: '班级、姓名、学号为必填' });
+    if (!rawClass || !name || !studentId) {
+      errors.push({ row: rowNo, message: `班级、姓名、学号为必填，该行已跳过（表中班级「${normClassName(rawClass) || '空'}」）` });
+      skipped++;
       return;
     }
-    // 修改72：班级准入 —— 未登记班级自动建班（标记「待补信息」），不阻断导入
-    const ensured = ensureClass(className, user, 'import');
-    if (ensured && ensured.created) autoCreated.add(normClassName(ensured.class.name));
-    const exist = store.db.students.find((s) => s.className === className && s.studentId === studentId);
-    // 修改72：纪律委员 / 辅导员 / 班主任不再由学生名单导入维护 —— 一律以「班级管理」为权威源。
-    // 导入模板中这三列已移除（只留 年级/班级/姓名/学号）；此处仍保留兜底，
-    // 用于兼容①用户手上的旧模板 ②前端或脚本直接 POST rows 传这三列的情况。
-    // 班级管理有值 → 以班级管理为准并提示；班级管理未登记 → 兜底采用表格值。
+    // 班级准入：班级名必须已在「班级管理」中登记；不匹配 → 跳过该条
+    const gate = checkClassRegistered(rawClass);
+    if (!gate.ok) {
+      errors.push({ row: rowNo, message: `班级不存在或未匹配（班级管理中没有「${gate.name || normClassName(rawClass)}」），该行已跳过；请核对班级名称，或先在「班级管理」中登记该班级` });
+      skipped++;
+      return;
+    }
+    const className = gate.name;
+    if (normClassName(rawClass) !== className) {
+      notices.push({ row: rowNo, message: `班级「${normClassName(rawClass)}」已按班级管理中的「${className}」导入（空格 / 大小写差异已自动校正）` });
+    }
+    // 修改75：匹配策略（防"更新名单被当成新增插入"）——
+    // ① 班级 + 学号 精确匹配（主键口径，不变）；
+    // ② 未命中时按 班级 + 姓名 兜底：名单更正常见于学号更正（如 2017002304 → 2017002504），
+    //    若仍只按学号匹配，会把更正后的行当成新学生插入，出现"一人两条"重复记录。
+    //    同班同名恰好一条 → 视为同一学生，做字段级更新（学号随名单更正）；
+    //    同班同名多条 → 无法唯一判定更新目标，跳过该条并提示先手工处理重复。
+    let exist = store.db.students.find(
+      (s) => normClassName(s.className).toLowerCase() === className.toLowerCase() && s.studentId === studentId
+    );
+    if (!exist) {
+      const sameName = store.db.students.filter(
+        (s) => normClassName(s.className).toLowerCase() === className.toLowerCase() && String(s.name || '').trim() === name
+      );
+      if (sameName.length === 1) {
+        exist = sameName[0];
+        notices.push({ row: rowNo, message: `表中学号「${studentId}」在名单中不存在，已按同班同名匹配到学号「${exist.studentId}」的记录并更新（视为学号更正，未新增）` });
+      } else if (sameName.length > 1) {
+        errors.push({ row: rowNo, message: `班级「${className}」下存在 ${sameName.length} 条同名记录（学号：${sameName.map((s) => s.studentId).join('、')}），无法判定更新目标，该行已跳过；请先在名单中手工处理重复后再导入` });
+        skipped++;
+        return;
+      }
+    }
+    // 三岗位：班级管理为权威源；班级管理未登记该岗位时，表格留空 = 保留库中原值（绝不清空）
     const posts = classPostsOf(className) || {};
     const tbl = {
       disciplineMember: String(r['纪律委员'] || '').trim(),
       counselor: String(r['辅导员'] || '').trim(),
       classTeacher: String(r['班主任'] || '').trim(),
     };
-    const merged = {};
-    for (const k of ['disciplineMember', 'counselor', 'classTeacher']) {
-      if (posts[k]) {
-        merged[k] = posts[k];
-        if (tbl[k] && tbl[k] !== posts[k]) {
-          notices.push({ row: rowNo, message: `「${k === 'classTeacher' ? '班主任' : k === 'counselor' ? '辅导员' : '纪律委员'}」以班级管理中维护的「${posts[k]}」为准（表中为「${tbl[k]}」，已忽略）` });
-        }
-      } else {
-        merged[k] = tbl[k];
-      }
-    }
-    const fields = {
+    const next = {
+      className,
+      studentId,
       name,
       grade: String(r['年级'] || '').trim() || (exist ? exist.grade || '' : ''),
-      ...merged,
     };
+    for (const k of ['disciplineMember', 'counselor', 'classTeacher']) {
+      if (posts[k]) {
+        next[k] = posts[k];
+        if (tbl[k] && tbl[k] !== posts[k]) {
+          notices.push({ row: rowNo, message: `「${POST_LABEL[k]}」以班级管理中维护的「${posts[k]}」为准（表中为「${tbl[k]}」，已忽略）` });
+        }
+      } else {
+        next[k] = tbl[k] || (exist ? exist[k] || '' : '');
+      }
+    }
     if (exist) {
-      Object.assign(exist, fields);
-      updated++;
+      const diff = [];
+      for (const k of Object.keys(next)) {
+        if (String(exist[k] || '') !== String(next[k] || '')) {
+          exist[k] = next[k];
+          diff.push(k === 'studentId' ? '学号' : (POST_LABEL[k] || k));
+        }
+      }
+      if (diff.length) updated++;
+      else unchanged++;
     } else {
-      store.db.students.push({ id: uid('stu'), className, studentId, ...fields });
+      store.db.students.push({ id: uid('stu'), ...next });
       inserted++;
     }
   });
   if (inserted || updated) store.save('students');
-  for (const nm of autoCreated) {
-    notices.unshift({ row: 0, message: `班级名单中出现新班级「${nm}」，已在班级管理中自动建档并标记「待补信息」，请到「班级管理」补充年级 / 专业 / 班主任 / 辅导员 / 纪律委员` });
-  }
-  json(res, 200, { total: rows.length, inserted, updated, failed: errors.length, errors: errors.slice(0, 20), notices: notices.slice(0, 20), noticesCount: notices.length });
+  dataOplog(user, '批量导入班级名单', `共 ${rows.length} 条，新增 ${inserted}，更新 ${updated}，无变化 ${unchanged}，跳过 ${skipped}`);
+  json(res, 200, {
+    total: rows.length, inserted, updated, unchanged, skippedRows: skipped, failed: errors.length,
+    errors: errors.slice(0, 20), errorsCount: errors.length,
+    notices: notices.slice(0, 20), noticesCount: notices.length,
+  });
 });
 
 route('PUT', '/api/students/:id', { roles: ['admin', 'rights', 'collegeOfficer'] }, async ({ res, params, body }) => {
@@ -1931,9 +1969,12 @@ route('PUT', '/api/students/:id', { roles: ['admin', 'rights', 'collegeOfficer']
   const name = String(body.name ?? stu.name).trim();
   const studentId = String(body.studentId ?? stu.studentId).trim();
   if (!className || !name || !studentId) fail(400, '班级、姓名、学号为必填项');
-  if (store.db.students.some((s) => s.id !== stu.id && s.className === className && s.studentId === studentId)) fail(400, '该班级下已存在相同学号的学生');
+  // 修改73：班级准入 —— 与批量导入同一口径，未登记班级拒绝（不再自动建档）
+  const gate = checkClassRegistered(className);
+  if (!gate.ok) fail(400, gate.reason);
+  if (store.db.students.some((s) => s.id !== stu.id && normClassName(s.className).toLowerCase() === gate.name.toLowerCase() && s.studentId === studentId)) fail(400, '该班级下已存在相同学号的学生');
   Object.assign(stu, {
-    className,
+    className: gate.name,
     name,
     studentId,
     grade: String(body.grade ?? stu.grade ?? '').trim(),
@@ -1941,8 +1982,7 @@ route('PUT', '/api/students/:id', { roles: ['admin', 'rights', 'collegeOfficer']
     counselor: String(body.counselor ?? stu.counselor).trim(),
     classTeacher: String(body.classTeacher ?? stu.classTeacher).trim(),
   });
-  // 修改72：三岗位以「班级管理」为权威源（只读镜像），未登记班级自动建班
-  ensureClass(className, null, 'import');
+  // 修改72：三岗位以「班级管理」为权威源（只读镜像）
   applyClassPosts(stu);
   store.save('students');
   json(res, 200, { student: stu });

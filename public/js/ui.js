@@ -492,14 +492,22 @@ export function importModal({ title, templateName, templateFile, tip, doImport, 
           const partition = r.fullyImported != null
             ? `<div class="ir-line ok">结果分区：完全导入 ${r.fullyImported} 条${r.partialImported ? `，部分导入（字段已跳过）${r.partialImported} 条` : ''}${r.notImported ? `，不予导入 ${r.notImported} 条` : ''}</div>`
             : '';
+          // 修改74：结果行区分「成功导入（新增/更新/无变化）」与「跳过条数」；
+          // r.inserted != null 表示学生名单导入（按新增/更新/无变化/跳过四档展示），
+          // 其余导入沿用原有"导入 N 条"文案；r.skippedRows 为班级不匹配等被跳过的行数。
+          const importedCount = r.inserted != null ? r.inserted : (r.imported ?? r.total - r.failed);
+          const okLine = `✓ 共 ${r.total} 条${r.skipped ? `，跳过 ${r.skipped} 条非"已通过"记录` : ''}${r.duplicates ? `，跳过重复 ${r.duplicates} 条` : ''}，${r.inserted != null ? `新增 ${r.inserted} 条` : `导入 ${importedCount} 条`}${r.updated ? `，更新 ${r.updated} 条` : ''}${r.unchanged ? `，无变化 ${r.unchanged} 条` : ''}${r.skippedRows ? `，跳过 ${r.skippedRows} 条` : ''}${r.applied != null ? (r.reverted != null ? `，${r.applied} 条假单生效` : `，其中 ${r.applied} 条已自动更新考勤状态`) : ''}${r.reverted ? `，${r.reverted} 条无效请假已改判缺勤` : ''}`;
           resultBox.innerHTML = `
             <div class="import-result">
-              <div class="ir-line ok">✓ 共 ${r.total} 条${r.skipped ? `，跳过 ${r.skipped} 条非"已通过"记录` : ''}${r.duplicates ? `，跳过重复 ${r.duplicates} 条` : ''}，导入 ${r.imported ?? r.total - r.failed} 条${r.updated ? `，更新 ${r.updated} 条` : ''}${r.applied != null ? (r.reverted != null ? `，${r.applied} 条假单生效` : `，其中 ${r.applied} 条已自动更新考勤状态`) : ''}${r.reverted ? `，${r.reverted} 条无效请假已改判缺勤` : ''}</div>
+              <div class="ir-line ok">${okLine}</div>
               ${partition}
-              ${r.failed || errs.length ? `<div class="ir-line bad">✗ 以下 ${errs.length} 条未处理：</div><ul class="ir-errs">${errs.map((x) => `<li>第 ${x.row} 行：${esc(x.message)}</li>`).join('')}</ul>` : ''}
+              ${r.failed || errs.length ? `<div class="ir-line bad">✗ 以下 ${errs.length} 条${r.skippedRows != null ? '已跳过' : '未处理'}：</div><ul class="ir-errs">${errs.map((x) => `<li>第 ${x.row} 行：${esc(x.message)}</li>`).join('')}</ul>` : ''}
               ${notices.length ? `<div class="ir-line warn">⚠ ${noticeTitle}</div><ul class="ir-errs ir-notices">${notices.map((x) => `<li>第 ${x.row} 行：${esc(x.message)}</li>`).join('')}</ul>` : ''}
             </div>`;
-          toast(`导入完成：导入 ${r.imported ?? r.total - r.failed} 条${r.updated ? `，更新 ${r.updated} 条` : ''}${r.failed ? `，未处理 ${errs.length} 条` : ''}`, errs.length ? 'info' : 'success');
+          toast(
+            `导入完成：${r.inserted != null ? `新增 ${r.inserted} 条` : `导入 ${importedCount} 条`}${r.updated ? `，更新 ${r.updated} 条` : ''}${r.unchanged ? `，无变化 ${r.unchanged} 条` : ''}${r.skippedRows ? `，跳过 ${r.skippedRows} 条` : ''}${r.failed ? `，未处理 ${errs.length} 条` : ''}`,
+            errs.length ? 'info' : 'success'
+          );
           onDone && onDone(r);
         } catch (err) {
           resultBox.innerHTML = `<div class="import-result"><div class="ir-line bad">✗ ${esc(err.message)}</div></div>`;
