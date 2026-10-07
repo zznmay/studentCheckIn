@@ -34,6 +34,7 @@ export default {
           <button class="btn" id="btnSearch">查询</button>
           <div class="spacer"></div>
           <button class="btn btn-danger-plain" id="btnBatchDel" disabled>删除选中</button>
+          <button class="btn btn-danger-plain" id="btnClear" title="清空当前筛选班级（未筛选时为全部班级）的名单数据，不影响登录账号">${ICONS.trash} 清空全部数据</button>
         </div>
         <div class="table-wrap">
           <table class="table" data-card="k,-,s,t,n,m,m,m,x">
@@ -99,6 +100,8 @@ export default {
     });
 
     const selected = new Set();
+    // 修改76：当前筛选范围（所选班级或全部）内的学生总数，供「清空全部数据」确认框展示
+    let scopeTotal = 0;
 
     function syncBatchBtn() {
       batchBtn.disabled = selected.size === 0;
@@ -116,6 +119,7 @@ export default {
       const d = await api(`/api/students?${params}`);
       listCache = d.list;
       selected.clear();
+      scopeTotal = d.total; // 修改76：当前筛选范围（所选班级或全部）内的学生总数，供「清空全部数据」确认框展示
       infoEl.textContent = `共 ${d.total} 名学生`;
       renderPager(pagerEl, d, (p) => {
         state.page = p;
@@ -265,6 +269,26 @@ export default {
       if (!ok) return;
       const r = await api('/api/students/batch-delete', { method: 'POST', body: { ids: [...selected] } });
       toast(`已删除 ${r.deleted} 名学生`);
+      load();
+    };
+
+    // 修改76：清空名单数据 —— 仅删除 students（按所选班级或全部），登录账号 / 考勤 / 假单不受影响
+    root.querySelector('#btnClear').onclick = async () => {
+      const scopeName = state.className || '';
+      const n = scopeTotal;
+      if (!n) return toast('当前范围为空，无需清空', 'info');
+      const scopeLine = scopeName
+        ? `将删除班级 <b>${esc(scopeName)}</b> 名单中的全部 <b>${n}</b> 名学生。`
+        : `当前未筛选班级：将删除 <b>全部班级</b> 共 <b>${n}</b> 名学生的名单数据。`;
+      const ok = await confirmDialog(
+        `${scopeLine}<br/>清空范围仅限<b>班级名单数据</b>：<b>登录账号、考勤与假单记录均不受影响</b>；名单删除后需重新导入。<br/><b>此操作不可恢复，请确认。</b>`,
+        { danger: true, title: '清空全部数据', okText: '确认清空' }
+      );
+      if (!ok) return;
+      const r = await api('/api/students/clear', { method: 'POST', body: { className: scopeName } });
+      toast(`已清空 ${r.deleted} 条名单数据${scopeName ? `（${scopeName}）` : '（全部班级）'}`);
+      state.page = 1;
+      await refreshClasses();
       load();
     };
 

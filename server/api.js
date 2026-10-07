@@ -1597,12 +1597,46 @@ route('POST', '/api/classes/migrate', { roles: ['admin', 'collegeOfficer'] }, as
 
 /** 显式联动：把班级名追加到该班班主任 / 辅导员账号的可见班级，
  *  并回填教职工名单的所带班级 —— 一次性双写，填平「改 staffs 不回写 user」的既有缺口。 */
-route('POST', '/api/classes/:name/sync-account', { roles: CLASS_MANAGE_ROLES }, async ({ res, user, params, body }) => {
-  const name = normClassName(decodeURIComponent(params.name));
-  const rec = classRecordOf(name);
-  if (!rec) fail(404, `班级「${name}」不存在`);
-  const which = String((body && body.which) || 'all');
+// 修改76：同步账号 → 自动补建缺失账号（幂等）。
+// 原行为：只把岗位人员追加到"已存在"账号的可见班级，账号不存在只能失败返回，链路断裂。
+// 现在：
+//  ① 班主任 / 辅导员：按工号自动建号（初始密码 Hzpt@工号，首登强制改密），并补齐教职工名单记录；
+//  ② 纪律委员：按学号建号 —— 前提是该学号能在本班名单中匹配到学生（防止学号填错造出孤儿账号），
+//     初始密码 Hzpt@学号后六位；姓名以班级名单为准，与班级管理填写不一致时提示；
+//  ③ 幂等：同一工号 / 学号全程仅一个账号 —— 已存在时不重复创建、不改动角色，
+//     只确保其可点名班级包含本班（同一人带多个班 = 一个账号关联多个班级，需求3）。
+// 汇总返回：created（新建）/ linked（已存在并追加班级）/ skipped（已存在且已含本班）/ failed（含原因）。
+// 修改77：核心逻辑抽为 syncClassAccounts(rec, opts) —— 单班级路由与「批量同步」路由共用同一份实现，
+// 避免两处漂移；opts.empty 表示该班未维护任何岗位人员（单班路由报错、批量路由记为跳过）。
+function syncClassAccounts(rec, opts) {
+  const name = normClassName(rec.name);
+  const { which = 'all', autoCreate = true, operatorName = '' } = opts || {};
   const results = [];
+  let created = 0, linked = 0, skipped = 0, failed = 0;
+
+  /** 把本班追加到账号可见班级（幂等）。返回是否发生变更 */
+  const linkClass = (u) => {
+    const list = Array.isArray(u.classes) ? u.classes : [];
+    if (list.some((c) => normClassName(c).toLowerCase() === name.toLowerCase())) return false;
+    u.classes = [...list, name];
+    store.save('users');
+    return true;
+  };
+  /** 教职工名单回填：无该工号则按岗位补建记录，保持「账号 ← → 教职工名单」一致 */
+  const upsertStaff = (staffId, sName, roleKey) => {
+    const st = (store.db.staffs || []).find((x) => x.staffId === staffId);
+    if (!st) {
+      store.db.staffs.push({ id: uid('stf'), staffId, name: sName, type: ROLE_NAMES[roleKey] || roleKey, classes: [name], createdAt: nowISO() });
+      store.save('staffs');
+      return;
+    }
+    const sl = Array.isArray(st.classes) ? st.classes : [];
+    if (!sl.some((c) => normClassName(c).toLowerCase() === name.toLowerCase())) {
+      st.classes = [...sl, name];
+      store.save('staffs');
+    }
+  };
+
   const targets = [];
   for (const f of CLASS_POST_FIELDS) {
     if (which !== 'all' && which !== f.key) continue;
@@ -1611,32 +1645,133 @@ route('POST', '/api/classes/:name/sync-account', { roles: CLASS_MANAGE_ROLES }, 
     if (!label) continue;
     targets.push({ f, p, label });
   }
-  if (!targets.length) fail(400, '该班级尚未维护可同步的岗位人员');
+  if (!targets.length) return { results: [], summary: { created: 0, linked: 0, skipped: 0, failed: 0 }, empty: true };
+
   for (const t of targets) {
-    const id = t.p.staffId || t.p.studentId || '';
-    if (!id) { results.push({ post: t.f.label, name: t.label, ok: false, message: '未填写工号 / 学号，无法定位账号（可先在「账号管理」为其建号）' }); continue; }
-    const u = store.db.users.find((x) => x.username === id);
-    if (!u) { results.push({ post: t.f.label, name: t.label, ok: false, message: `账号 ${id} 不存在，请先在「账号管理 → 教职工名单」生成账号` }); continue; }
-    const list = Array.isArray(u.classes) ? u.classes : [];
-    if (list.some((c) => normClassName(c).toLowerCase() === name.toLowerCase())) {
-      results.push({ post: t.f.label, name: t.label, ok: true, message: '账号已包含该班级，无需重复同步' });
-    } else {
-      u.classes = [...list, name];
-      store.save('users');
-      results.push({ post: t.f.label, name: t.label, ok: true, message: `已把「${name}」加入账号 ${id} 的可见班级` });
+    const isStudentPost = t.f.key === 'disciplineMember';
+    const id = String(t.p.staffId || t.p.studentId || '').trim();
+    if (!id) {
+      failed++;
+      results.push({ post: t.f.label, name: t.label, id: '', ok: false, action: 'failed', message: '未填写工号 / 学号，无法定位或创建账号' });
+      continue;
     }
-    // 同步回填教职工名单的所带班级（既有缺口：改账号 classes 不回写 staffs）
-    const st = (store.db.staffs || []).find((x) => x.staffId === id);
-    if (st) {
-      const sl = Array.isArray(st.classes) ? st.classes : [];
-      if (!sl.some((c) => normClassName(c).toLowerCase() === name.toLowerCase())) {
-        st.classes = [...sl, name];
-        store.save('staffs');
+    const u = store.db.users.find((x) => x.username === id);
+    if (u) {
+      // 幂等：账号已存在 —— 不重复创建、不改角色（账号唯一），只确保可见班级包含本班
+      const changed = linkClass(u);
+      if (changed) {
+        linked++;
+        if (!isStudentPost) upsertStaff(id, u.name, u.role);
+        results.push({ post: t.f.label, name: u.name, id, ok: true, action: 'linked', message: `账号已存在（${ROLE_NAMES[u.role] || u.role}），已把「${name}」加入其可点名班级` });
+      } else {
+        skipped++;
+        results.push({ post: t.f.label, name: u.name, id, ok: true, action: 'skipped', message: '账号已存在且已包含该班级，无需处理' });
       }
+      continue;
+    }
+    if (!autoCreate) {
+      failed++;
+      results.push({ post: t.f.label, name: t.label, id, ok: false, action: 'failed', message: `账号 ${id} 不存在（本次未开启自动补建），请先在「账号管理」创建` });
+      continue;
+    }
+    // ---- 自动补建缺失账号 ----
+    let initialPassword;
+    let newU;
+    if (isStudentPost) {
+      const stu = store.db.students.find((s) => s.studentId === id && normClassName(s.className).toLowerCase() === name.toLowerCase());
+      if (!stu) {
+        failed++;
+        results.push({ post: t.f.label, name: t.label, id, ok: false, action: 'failed', message: `纪律委员学号 ${id} 未能在「${name}」班级名单中匹配到学生，未创建账号；请先导入名单或核对学号` });
+        continue;
+      }
+      initialPassword = `Hzpt@${id.slice(-6)}`;
+      newU = {
+        id: uid('u'), username: id, name: stu.name, role: 'discipline', roles: ['discipline'],
+        classes: [name], enabled: true, mustChangePassword: true,
+        passwordHash: hashPassword(initialPassword), createdAt: nowISO(), createdBy: operatorName,
+      };
+      store.db.users.push(newU);
+      store.save('users');
+      created++;
+      let msg = `已自动创建纪律委员账号并关联「${name}」`;
+      if (t.label !== stu.name) msg += `（班级管理中姓名为「${t.label}」，账号姓名以名单中的「${stu.name}」为准）`;
+      results.push({ post: t.f.label, name: stu.name, id, ok: true, action: 'created', message: msg, initialPassword });
+    } else {
+      initialPassword = `Hzpt@${id}`;
+      newU = {
+        id: uid('u'), username: id, name: t.label, role: t.f.key, roles: [t.f.key],
+        classes: [name], enabled: true, mustChangePassword: true,
+        passwordHash: hashPassword(initialPassword), createdAt: nowISO(), createdBy: operatorName,
+      };
+      store.db.users.push(newU);
+      store.save('users');
+      created++;
+      upsertStaff(id, t.label, t.f.key);
+      results.push({ post: t.f.label, name: t.label, id, ok: true, action: 'created', message: `已自动创建${ROLE_NAMES[t.f.key]}账号并关联「${name}」`, initialPassword });
     }
   }
-  dataOplog(user, '同步班级到账号', `${name}：${results.filter((r) => r.ok).length}/${results.length} 项成功`);
-  json(res, 200, { results, class: classView(rec) });
+  return { results, summary: { created, linked, skipped, failed }, empty: false };
+}
+
+/** 单班级同步账号（班级管理行内「同步账号」按钮） */
+route('POST', '/api/classes/:name/sync-account', { roles: CLASS_MANAGE_ROLES }, async ({ res, user, params, body }) => {
+  const name = normClassName(decodeURIComponent(params.name));
+  const rec = classRecordOf(name);
+  if (!rec) fail(404, `班级「${name}」不存在`);
+  const out = syncClassAccounts(rec, {
+    which: String((body && body.which) || 'all'),
+    autoCreate: !body || body.autoCreate !== false,
+    operatorName: user.name,
+  });
+  if (out.empty) fail(400, '该班级尚未维护可同步的岗位人员');
+  dataOplog(user, '同步班级到账号', `${rec.name}：新建账号 ${out.summary.created}，关联班级 ${out.summary.linked}，跳过 ${out.summary.skipped}，失败 ${out.summary.failed}`);
+  json(res, 200, { results: out.results, summary: out.summary, class: classView(rec) });
+});
+
+// 修改77：批量同步账号 —— 两种入参（names 优先）：
+//  ① names: [...] → 同步勾选的班级；② 无 names → 按当前筛选条件（grade / status / q，
+//  与班级列表同口径）覆盖范围内全部班级，单次最多 200 个。
+// 逐班复用 syncClassAccounts（自动补建 + 幂等），返回总汇总、每班明细与已不存在的班级名，
+// 供前端一次展示「新建 / 关联 / 跳过 / 失败」四档结果与失败原因。
+route('POST', '/api/classes/sync-account-batch', { roles: CLASS_MANAGE_ROLES }, async ({ res, user, body }) => {
+  const which = String((body && body.which) || 'all');
+  const autoCreate = !body || body.autoCreate !== false;
+  const names = Array.isArray(body && body.names) ? body.names.map((x) => normClassName(x)).filter(Boolean) : [];
+  const missingNames = [];
+  let recs = [];
+  if (names.length) {
+    for (const n of names) {
+      const rec = classRecordOf(n);
+      if (rec) recs.push(rec);
+      else missingNames.push(n);
+    }
+    if (!recs.length) fail(400, '所选班级均已不存在，请刷新页面后重试');
+  } else {
+    const grade = String((body && body.grade) || '').trim();
+    const status = String((body && body.status) || '').trim();
+    const q = String((body && body.q) || '').trim().toLowerCase();
+    let list = (store.db.classes || []).map(classView);
+    if (grade) list = list.filter((c) => normGrade(c.grade) === normGrade(grade));
+    if (status === 'incomplete') list = list.filter((c) => c.status !== 'active');
+    else if (status === 'active') list = list.filter((c) => c.status === 'active');
+    if (q) list = list.filter((c) => [c.name, c.grade, c.major, c.headTeacherName, c.counselorName, c.disciplineMemberName].join(' ').toLowerCase().includes(q));
+    recs = list.map((c) => classRecordOf(c.name)).filter(Boolean);
+    if (!recs.length) fail(400, '当前筛选范围内没有可同步的班级');
+    if (recs.length > 200) fail(400, `一次最多同步 200 个班级（当前筛选命中 ${recs.length} 个），请先缩小筛选范围`);
+  }
+  const perClass = [];
+  const total = { created: 0, linked: 0, skipped: 0, failed: 0 };
+  for (const rec of recs) {
+    const out = syncClassAccounts(rec, { which, autoCreate, operatorName: user.name });
+    if (out.empty) {
+      perClass.push({ name: rec.name, empty: true, summary: { created: 0, linked: 0, skipped: 0, failed: 0 }, results: [] });
+      continue;
+    }
+    for (const k of Object.keys(total)) total[k] += out.summary[k] || 0;
+    perClass.push({ name: rec.name, empty: false, summary: out.summary, results: out.results });
+  }
+  dataOplog(user, '批量同步班级账号', `共 ${recs.length} 个班级：新建账号 ${total.created}，关联班级 ${total.linked}，跳过 ${total.skipped}，失败 ${total.failed}`);
+  json(res, 200, { total: recs.length, summary: total, classes: perClass, missingNames });
 });
 
 // ==================== 账号生成（学生 / 教职工，初始密码首登强制修改） ====================
@@ -1996,6 +2131,30 @@ route('POST', '/api/students/batch-delete', { roles: ['admin', 'rights', 'colleg
   const deleted = before - store.db.students.length;
   if (deleted) store.save('students');
   json(res, 200, { deleted });
+});
+
+// 修改76：清空班级名单 —— 仅删除 students 集合数据（可按班级或全部），不触碰登录账号 /
+// 考勤 / 假单 / 班级管理等任何其他集合（需求：清空范围仅限班级名单数据）。
+// 幂等：名单已为空时返回 deleted:0，不报错。
+route('POST', '/api/students/clear', { roles: ['admin', 'collegeOfficer'] }, async ({ res, user, body }) => {
+  const className = String((body && body.className) || '').trim();
+  let target;
+  let scope;
+  if (className) {
+    const key = normClassName(className).toLowerCase();
+    target = store.db.students.filter((s) => normClassName(s.className).toLowerCase() === key);
+    scope = className;
+  } else {
+    target = store.db.students;
+    scope = '全部班级';
+  }
+  const ids = new Set(target.map((s) => s.id));
+  if (ids.size) {
+    store.db.students = store.db.students.filter((s) => !ids.has(s.id));
+    store.save('students');
+  }
+  dataOplog(user, '清空班级名单', `${scope}：删除 ${ids.size} 名学生的名单数据（不影响登录账号）`);
+  json(res, 200, { deleted: ids.size, scope });
 });
 
 route('DELETE', '/api/students/:id', { roles: ['admin', 'rights', 'collegeOfficer'] }, async ({ res, params }) => {
