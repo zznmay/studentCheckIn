@@ -27,6 +27,13 @@ const POST_LABELS = [
 ];
 const LINK_CLS = { linked: 'tag-green', 'no-account': 'tag-gray', mismatch: 'tag-orange', empty: 'tag-gray' };
 const LINK_TEXT = { linked: '已关联', 'no-account': '未建账号', mismatch: '班级不一致', empty: '—' };
+// 修改77：同步账号结果四档动作（单班弹窗与批量结果共用）
+const SYNC_ACT = {
+  created: { cls: 'tag-green', text: '新建账号' },
+  linked: { cls: 'tag-blue', text: '已关联' },
+  skipped: { cls: 'tag-gray', text: '无需处理' },
+  failed: { cls: 'tag-red', text: '失败' },
+};
 
 /** 班级岗位：三枚标签，缺失显示灰色「—」（移动端归入 rc-g 标签组，自动换行） */
 function postCell(c) {
@@ -86,7 +93,7 @@ export default {
           <input class="input" id="q" autocomplete="off" placeholder="搜索班级 / 年级 / 专业 / 教师姓名" style="width:230px" />
           <button class="btn" id="btnSearch">查询</button>
           <div class="spacer"></div>
-          <button class="btn btn-danger-plain" id="btnBatchSync" disabled>同步选中到账号</button>
+          <button class="btn" id="btnBatchSync" title="勾选班级=同步所选；未勾选=同步当前筛选范围内的全部班级">${ICONS.refresh} 批量同步账号</button>
           <button class="btn" id="btnMigrate" title="把班级名单中逐学生冗余的三岗位聚合进班级管理">存量迁移</button>
         </div>
         <div class="table-wrap">
@@ -140,11 +147,22 @@ export default {
     });
 
     const selected = new Set();
+    // 修改77：批量同步按钮不再要求勾选 —— 未勾选时同步「当前筛选范围内的全部班级」
     function syncBatchBtn() {
-      batchBtn.disabled = selected.size === 0;
-      batchBtn.textContent = selected.size ? `同步选中到账号（${selected.size}）` : '同步选中到账号';
+      const n = selected.size;
+      batchBtn.innerHTML = `${ICONS.refresh} ${n ? `批量同步账号（${n}）` : '批量同步账号'}`;
       const boxes = tbody.querySelectorAll('input[type="checkbox"]');
       checkAll.checked = boxes.length > 0 && [...boxes].every((b) => b.checked);
+    }
+
+    /** 当前筛选条件的文字描述（批量同步确认框用） */
+    function filterDesc() {
+      const parts = [];
+      if (state.grade) parts.push(`年级「${state.grade}」`);
+      if (state.status === 'active') parts.push('信息完整');
+      if (state.status === 'incomplete') parts.push('待补信息 / 未登记');
+      if (state.q) parts.push(`关键词「${state.q}」`);
+      return parts.length ? parts.join(' · ') : '全部班级（无筛选条件）';
     }
 
     async function load() {
@@ -254,23 +272,32 @@ export default {
     }
 
     // ---- 同步到账号 ----
+    // 修改76：后端会自动补建缺失账号（幂等），结果按 created/linked/skipped/failed 四档汇总展示；
+    // 新建账号附带初始密码（首登强制改密），供管理员告知本人。
     async function syncAccount(name) {
       try {
         const r = await api(`/api/classes/${encodeURIComponent(name)}/sync-account`, { method: 'POST', body: {} });
-        const ok = r.results.filter((x) => x.ok).length;
+        const s = r.summary || { created: 0, linked: 0, skipped: 0, failed: 0 };
         modal({
           title: `同步结果：${name}`,
-          width: 520,
+          width: 560,
           showFooter: false,
           body: `<div class="import-result">
-            ${r.results.map((x) => `<div class="ir-line ${x.ok ? 'ok' : 'bad'}">${x.ok ? '✓' : '✗'} ${esc(x.post)}·${esc(x.name)}：${esc(x.message)}</div>`).join('')}
+            <div class="ir-line ok">✓ 同步完成：新建账号 <b>${s.created}</b>，关联班级 <b>${s.linked}</b>，无需处理 <b>${s.skipped}</b>${s.failed ? `，<b style="color:var(--danger)">失败 ${s.failed}</b>` : ''}</div>
+            ${r.results.map((x) => {
+              const a = SYNC_ACT[x.action] || { cls: 'tag-gray', text: x.action || '' };
+              return `<div class="ir-line ${x.ok ? 'ok' : 'bad'}">${x.ok ? '✓' : '✗'} <span class="tag ${a.cls}">${a.text}</span> ${esc(x.post)}·${esc(x.name)}：${esc(x.message)}${x.initialPassword ? `<div class="muted small" style="margin-top:2px">初始密码：<b>${esc(x.initialPassword)}</b>（首次登录将强制修改，请告知本人）</div>` : ''}</div>`;
+            }).join('')}
           </div>
           <div style="margin-top:14px;text-align:right"><button class="btn" data-act="closeX">关闭</button></div>`,
           onMount(wrap, close) {
             wrap.querySelector('[data-act="closeX"]').onclick = close;
           },
         });
-        toast(ok ? `已同步 ${ok} 项` : '无可同步的岗位人员', ok ? 'success' : 'info');
+        toast(
+          s.created || s.linked ? `同步完成：新建 ${s.created}，关联 ${s.linked}${s.failed ? `，失败 ${s.failed}` : ''}` : '同步完成：无需处理项',
+          s.failed ? 'info' : 'success'
+        );
         load();
       } catch (e) {
         toast(e.message, 'error');
@@ -350,20 +377,74 @@ export default {
       else selected.delete(b.dataset.check);
       syncBatchBtn();
     });
+    // ---- 批量同步账号（修改77）----
+    // 勾选班级 → 同步所选；未勾选 → 同步当前筛选范围内的全部班级（与列表同口径）。
+    // 明细只列出「新建账号」与「失败项」（跳过项通常很多，用每班汇总数字表达）。
+    function showBatchResult(r) {
+      const s = r.summary || { created: 0, linked: 0, skipped: 0, failed: 0 };
+      const blocks = (r.classes || [])
+        .map((c) => {
+          const cs = c.summary || {};
+          const head = c.empty
+            ? `<div class="ir-line warn">⚠ ${esc(c.name)}：未维护岗位人员，已跳过</div>`
+            : `<div class="ir-line ok">${esc(c.name)}：新建 <b>${cs.created}</b>，关联 <b>${cs.linked}</b>，跳过 ${cs.skipped}${cs.failed ? `，<b style="color:var(--danger)">失败 ${cs.failed}</b>` : ''}</div>`;
+          const lines = (c.results || [])
+            .filter((x) => x.action === 'created' || !x.ok)
+            .map((x) => {
+              const a = SYNC_ACT[x.action] || { cls: 'tag-gray', text: '' };
+              return `<li><span class="tag ${a.cls}">${a.text}</span> ${esc(x.post)}·${esc(x.name)}：${esc(x.message)}${x.initialPassword ? `　初始密码 <b>${esc(x.initialPassword)}</b>` : ''}</li>`;
+            })
+            .join('');
+          return head + (lines ? `<ul class="ir-errs ir-notices">${lines}</ul>` : '');
+        })
+        .join('');
+      modal({
+        title: `批量同步结果（${r.total} 个班级）`,
+        width: 620,
+        showFooter: false,
+        body: `<div class="import-result">
+            <div class="ir-line ok">✓ 汇总：新建账号 <b>${s.created}</b>，关联班级 <b>${s.linked}</b>，无需处理 <b>${s.skipped}</b>${s.failed ? `，<b style="color:var(--danger)">失败 ${s.failed}</b>` : ''}</div>
+            ${(r.missingNames || []).length ? `<div class="ir-line warn">⚠ 以下班级已不存在，未同步：${esc(r.missingNames.join('、'))}</div>` : ''}
+            <div class="muted small" style="margin-top:6px">明细仅列出「新建账号」与「失败项」；新建账号的初始密码请告知本人，首次登录将强制修改。</div>
+          </div>
+          <div style="max-height:340px;overflow:auto;margin-top:10px">${blocks}</div>
+          <div style="margin-top:14px;text-align:right"><button class="btn" data-act="closeX">关闭</button></div>`,
+        onMount(wrap, close) {
+          wrap.querySelector('[data-act="closeX"]').onclick = close;
+        },
+      });
+    }
+
     batchBtn.onclick = async () => {
-      if (!selected.size) return;
-      for (const name of [...selected]) await syncAccountQuiet(name);
-      toast(`已同步 ${selected.size} 个班级`);
+      const names = [...selected];
+      const scope = names.length
+        ? `所选 <b>${names.length}</b> 个班级`
+        : `当前筛选范围内的<b>全部班级</b>（${esc(filterDesc())}）`;
+      const ok = await confirmDialog(
+        `将对 ${scope} 执行「批量同步账号」：<br/>缺失的班主任 / 辅导员 / 纪律委员账号会<b>自动创建</b>（按工号 / 学号，首登强制改密）；<br/>已存在的账号不重复创建，只把对应班级加入其可点名班级。`,
+        { title: '批量同步账号', okText: '开始同步' }
+      );
+      if (!ok) return;
+      batchBtn.disabled = true;
+      try {
+        const r = await api('/api/classes/sync-account-batch', {
+          method: 'POST',
+          body: { names, grade: state.grade, status: state.status, q: state.q },
+        });
+        const s = r.summary || {};
+        showBatchResult(r);
+        toast(
+          s.created || s.linked ? `批量同步完成：新建 ${s.created}，关联 ${s.linked}${s.failed ? `，失败 ${s.failed}` : ''}` : '批量同步完成：无需处理项',
+          s.failed ? 'info' : 'success'
+        );
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        batchBtn.disabled = false;
+        syncBatchBtn();
+      }
       load();
     };
-
-    async function syncAccountQuiet(name) {
-      try {
-        await api(`/api/classes/${encodeURIComponent(name)}/sync-account`, { method: 'POST', body: {} });
-      } catch {
-        /* 批量同步：单项失败不阻断 */
-      }
-    }
 
     tbody.onclick = async (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
