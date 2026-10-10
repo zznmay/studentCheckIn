@@ -326,4 +326,6 @@ function cellToDateTime(v) {
   return null;
 }
 
-module.exports = { parseXlsxRows, rowsToObjects, buildXlsx, cellToDateTime, excelSerialToDateTime, xmlEscape };
+// 修改80：zipStore / zipRead / crc32 一并导出，供 datamgmt.js 的备份包 zip 化复用
+// （函数本体自 xlsx 导出起即在此，仅扩大导出面，不改动任何实现）
+module.exports = { parseXlsxRows, rowsToObjects, buildXlsx, cellToDateTime, excelSerialToDateTime, xmlEscape, zipStore, zipRead, crc32 };

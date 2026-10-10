@@ -9,6 +9,8 @@ const api = require('./api');
 const { json } = require('./utils');
 
 store.init();
+// 修改80：启动时把存量内嵌 base64 附件（点名签名 / 异议佐证材料）外置为内容寻址文件（幂等）
+api.externalizeAllAttachments();
 // 修改30：启动时回溯补算历史存量缺勤的处分（幂等，已一致的学生零写盘）
 api.backfillAllPunishments();
 

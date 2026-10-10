@@ -1,6 +1,8 @@
 'use strict';
 const crypto = require('crypto');
 const store = require('./store');
+// 修改80：附件外置（签名 / 异议佐证材料按 sha256 落盘，记录只存引用；读取点回填 dataUri）
+const attachments = require('./attachments');
 const xlsx = require('./xlsx');
 const {
   PERIODS,
@@ -2342,7 +2344,8 @@ route('GET', '/api/attendance/:id', {}, async ({ res, user, params }) => {
   const s = store.db.attendance.find((x) => x.id === params.id);
   if (!s) fail(404, '点名记录不存在');
   if (hasRole(user, 'discipline') && !hasAnyRole(user, ['admin', 'rights', 'collegeOfficer']) && !(user.classes || []).includes(s.className)) fail(403, '没有权限查看该记录');
-  json(res, 200, { session: { ...s, counts: sessionCounts(s) } });
+  // 修改80：signatureRef → signature(dataUri) 回填，响应形状与改造前一致
+  json(res, 200, { session: { ...attachments.hydrateAttendance(s), counts: sessionCounts(s) } });
 });
 
 // ==================== 修改81：考勤修改日志查询（时间线数据源） ====================
@@ -2551,7 +2554,7 @@ route('GET', '/api/confirm/:token', { public: true }, async ({ res, params }) =>
       items: s.items.map(({ studentId, name, status, note }) => ({ studentId, name, status, note })),
     },
     confirm: s.confirmStatus === 'confirmed'
-      ? { name: s.confirmedName, at: s.confirmedAt, signature: s.signature || '' }
+      ? { name: s.confirmedName, at: s.confirmedAt, signature: s.signatureRef ? attachments.toDataUri(s.signatureRef) : s.signature || '' }
       : null,
   });
 });
@@ -2566,10 +2569,14 @@ route('POST', '/api/confirm/:token', { public: true }, async ({ res, params, bod
   if (!name) fail(400, '请填写确认人姓名');
   if (!signature.startsWith('data:image/png;base64,')) fail(400, '请完成手写签名');
   if (signature.length > 200 * 1024) fail(400, '签名图片过大，请重新签名');
+  // 修改80：签名外置为内容寻址文件（data/attachments/<sha256>），记录只存引用，避免备份包随点名线性膨胀
+  const sigRef = attachments.putDataUri(signature);
+  if (!sigRef) fail(400, '签名图片格式非法，请重新签名');
   s.confirmStatus = 'confirmed';
   s.confirmedName = name;
   s.confirmedAt = nowISO();
-  s.signature = signature;
+  s.signatureRef = sigRef;
+  delete s.signature; // 清理可能残留的旧内嵌字段
   // 修改81：签字确认同样属于记录变更 → 落日志（确认人免登录无账号，external 标记）
   appendAttendanceLog({
     id: uid('alog'),
@@ -3797,7 +3804,7 @@ route('PUT', '/api/settings/semesters', { roles: ['admin'] }, async ({ res, body
 });
 
 // ==================== 数据管理（备份 / 恢复 / 迁移 / 灰测留存，仅管理员） ====================
-const { register: registerDataMgmt, oplog: dataOplog } = require('./datamgmt');
+const { register: registerDataMgmt, oplog: dataOplog, snapshot: dataSnapshot } = require('./datamgmt');
 registerDataMgmt({ route, fail, json, readBody });
 
 // ==================== 考勤异议（修改27）：学生提交 / 权益部与学院考勤负责老师审核改判 ====================
@@ -3827,6 +3834,7 @@ function appealPublicView(a, opts = {}) {
 }
 
 // 附件校验（提交/修改共用，修改28 抽取；错误文案与 m27 测试断言逐字一致）
+// 修改80：校验通过后外置为内容寻址文件，记录只存 {name, sha256, mime, size} 引用
 function parseAttachments(atts) {
   if (!Array.isArray(atts)) atts = [];
   if (atts.length > 3) fail(400, '佐证材料最多 3 张');
@@ -3835,7 +3843,9 @@ function parseAttachments(atts) {
     const fname = String((x && x.name) || `附件${i + 1}`).slice(0, 50);
     if (!/^data:image\/(jpeg|png|webp);base64,/.test(dataUrl)) fail(400, `第 ${i + 1} 张附件格式不支持（仅支持 jpg/png/webp 图片）`);
     if (dataUrl.length > 1.4 * 1024 * 1024) fail(400, `第 ${i + 1} 张附件超过 1MB，请压缩后上传`);
-    return { name: fname, dataUrl };
+    const ref = attachments.putDataUri(dataUrl);
+    if (!ref) fail(400, `第 ${i + 1} 张附件解析失败，请重新上传`);
+    return { name: fname, sha256: ref.sha256, mime: ref.mime, size: ref.size };
   });
 }
 // 免登录异议操作的三要素身份核验（撤销/修改共用，修改28 抽取）：返回对应异议单
@@ -3912,7 +3922,7 @@ route('GET', '/api/public/appeals/mine', { public: true }, async ({ res, req, qu
   const list = store.db.appeals
     .filter((a) => a.className === className && a.studentId === studentId)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-    .map((a) => appealPublicView(a, { withAttachments: true }));
+    .map((a) => attachments.hydrateAppeal(appealPublicView(a, { withAttachments: true })));
   json(res, 200, { appeals: list });
 });
 
@@ -3942,7 +3952,7 @@ route('POST', '/api/public/appeals/:id/edit', { public: true }, async ({ res, re
   a.updatedAt = nowISO();
   store.save('appeals');
   dataOplog(null, '考勤异议修改', `${a.id} ${a.className} ${a.studentName} 学生修改理由/材料`);
-  json(res, 200, { appeal: appealPublicView(a, { withAttachments: true }) });
+  json(res, 200, { appeal: attachments.hydrateAppeal(a) });
 });
 
 // ②-3 已办结重新判定（登录态，修改28）：admin/collegeOfficer 恒可，rights 须为本单审核人/改判人；
@@ -4007,7 +4017,7 @@ route('POST', '/api/appeals/:id/reresolve', { roles: APPEAL_REVIEW_ROLES }, asyn
   // 修改30：重新改判影响缺勤节数 → 重算该生处分
   recalcPunishmentsByPairs([{ className: a.className, studentId: a.studentId }]);
   dataOplog(user, '考勤异议重新改判', `${a.id} ${a.className} ${a.studentName}：${changed}/${resolveItems.length} 条重判（历史 ${a.resolveHistory.length} 轮）`);
-  json(res, 200, { appeal: a, changed });
+  json(res, 200, { appeal: attachments.hydrateAppeal(a), changed });
 });
 
 // ③ 审核列表（权益部 / 学院考勤负责老师 / 管理员）
@@ -4048,7 +4058,7 @@ route('GET', '/api/appeals/:id', { roles: APPEAL_REVIEW_ROLES }, async ({ res, p
   // appealPublicView——它会丢弃 studentName/studentId/className，导致弹窗头部空白），
   // 并补充 recordsCount / attachmentsCount 两个计算字段——此前直接返回原始对象缺这两个，
   // 前端模板读到 undefined 显示「记录 undefined 条 · 附件 undefined/3」。
-  json(res, 200, { appeal: { ...a, recordsCount: a.records.length, attachmentsCount: (a.attachments || []).length } });
+  json(res, 200, { appeal: { ...attachments.hydrateAppeal(a), recordsCount: a.records.length, attachmentsCount: (a.attachments || []).length } });
 });
 
 // ⑤ 审核判定：pending → approved / rejected（终态锁定）
@@ -4066,7 +4076,7 @@ route('POST', '/api/appeals/:id/review', { roles: APPEAL_REVIEW_ROLES }, async (
   a.updatedAt = nowISO();
   store.save('appeals');
   dataOplog(user, '考勤异议审核', `${a.id} ${a.className} ${a.studentName} → ${decision === 'approved' ? '通过' : '驳回'}`);
-  json(res, 200, { appeal: a });
+  json(res, 200, { appeal: attachments.hydrateAppeal(a) });
 });
 
 // ⑥ 执行改判并办结（一致性核心）：approved → resolved
@@ -4121,7 +4131,7 @@ route('POST', '/api/appeals/:id/resolve', { roles: APPEAL_REVIEW_ROLES }, async 
   // 修改30：异议改判影响缺勤节数 → 重算该生处分（可能自动撤销/生成）
   recalcPunishmentsByPairs([{ className: a.className, studentId: a.studentId }]);
   dataOplog(user, '考勤异议改判', `${a.id} ${a.className} ${a.studentName}：${changed}/${resolveItems.length} 条改判（明细见异议单）`);
-  json(res, 200, { appeal: a, changed });
+  json(res, 200, { appeal: attachments.hydrateAppeal(a), changed });
 });
 
 // ==================== 处分管理路由（修改30） ====================
@@ -4206,4 +4216,17 @@ function backfillAllPunishments() {
   console.log(`[punishments] 启动补算完成：${students.length} 名学生核查，${touched} 人生成/更新处分（${Date.now() - t0}ms）`);
 }
 
-module.exports = { handle, reconcileStudentDate, backfillAllPunishments };
+// 修改80 补记：启动时把存量内嵌 base64（点名签名 / 异议佐证材料）一次性外置为内容寻址文件。
+// 幂等：已是引用形态的记录零改动；重复启动无副作用。迁移前自动打一份完整快照（可整体回滚）。
+// 单条转换失败保留原样并计数，不阻塞启动；读取侧双读兼容，半迁移状态照常可用。
+function externalizeAllAttachments() {
+  return attachments.externalizeAllAttachments({
+    store,
+    snapshot: () => {
+      const meta = dataSnapshot('附件外置迁移前自动快照');
+      console.log(`[attachments] 已保存迁移前快照：${meta.id}（回滚可恢复内嵌形态数据）`);
+    },
+  });
+}
+
+module.exports = { handle, reconcileStudentDate, backfillAllPunishments, externalizeAllAttachments };

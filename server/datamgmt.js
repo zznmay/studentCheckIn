@@ -571,4 +571,11 @@ function register({ route, fail }) {
 
 scheduleAuto();
 
-module.exports = { register, makeBundle, verifyBundle, applyBundle, oplog, runAutoBackup };
+/** 修改80：供启动迁移调用——改动存量数据（附件外置）前先打一份完整快照，可整体回滚到旧版本代码 */
+function snapshot(label) {
+  const meta = saveBundle(makeBundle('backup', label, 'auto-migrate'), BACKUP_DIR);
+  pruneBackups();
+  return meta;
+}
+
+module.exports = { register, makeBundle, verifyBundle, applyBundle, oplog, runAutoBackup, snapshot };
