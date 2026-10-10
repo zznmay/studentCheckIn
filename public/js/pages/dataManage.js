@@ -7,6 +7,8 @@ const KEY_NAMES = {
   users: '登录账号', students: '学生名单', attendance: '考勤记录',
   leaves: '假单', staffs: '教职工名单', settings: '系统设置', tokens: '登录令牌',
   appeals: '考勤异议', punishments: '处分记录',
+  // 修改80：附件（签名 / 异议佐证材料）已外置为内容寻址文件，预检与总览单列一行
+  attachments: '附件文件',
   // 修改72：班级管理集合
   classes: '班级管理',
 };
@@ -317,7 +319,7 @@ export default {
                 <td>${esc(b.label || '—')}</td>
                 <td>${fmtSize(b.size)}</td>
                 <td>
-                  <button class="btn-text" data-act="dl" data-id="${esc(b.id)}">下载</button>
+                  <button class="btn-text" data-act="dl" data-id="${esc(b.id)}" data-file="${esc(b.file || b.id + '.zip')}">下载</button>
                   <button class="btn-text" data-act="rs" data-id="${esc(b.id)}">恢复</button>
                 </td>
               </tr>`).join('') : '<tr><td colspan="5" class="table-empty">暂无数据包，先创建一份备份</td></tr>'}
@@ -334,7 +336,7 @@ export default {
       bodyEl.querySelector('#bkMigrate').onclick = async () => {
         try {
           const meta = await doBackup('migration');
-          await apiDownload(`/api/data/bundles/${encodeURIComponent(meta.id)}/download`, `${meta.id}.json`);
+          await apiDownload(`/api/data/bundles/${encodeURIComponent(meta.id)}/download`, meta.file || `${meta.id}.zip`); // 修改80：文件名取服务端 meta.file（zip 自包含附件）
           renderBody();
         } catch (e) {
           toast(e.message, 'error');
@@ -380,7 +382,7 @@ export default {
         }
       };
       bodyEl.querySelectorAll('[data-act="dl"]').forEach((b) => {
-        b.onclick = () => apiDownload(`/api/data/bundles/${encodeURIComponent(b.dataset.id)}/download`, `${b.dataset.id}.json`).catch((err) => toast(err.message, 'error'));
+        b.onclick = () => apiDownload(`/api/data/bundles/${encodeURIComponent(b.dataset.id)}/download`, b.dataset.file || `${b.dataset.id}.zip`).catch((err) => toast(err.message, 'error'));
       });
       bodyEl.querySelectorAll('[data-act="rs"]').forEach((b) => {
         b.onclick = () => restoreModal(b.dataset.id, renderBody);
@@ -392,16 +394,16 @@ export default {
       bodyEl.innerHTML = `
         <div class="dm-steps">
           <div class="dm-step"><span class="no">1</span><b>旧服务器：生成迁移包</b>
-            <div class="dm-note">点击下方按钮生成带 sha256 校验清单的迁移包并立即下载（.json）。建议同时保留一份常规备份。</div>
+            <div class="dm-note">点击下方按钮生成带 sha256 校验清单的迁移包并立即下载（.zip，含全部附件图片，导入新服务器后附件随包落盘、无需另行拷贝）。建议同时保留一份常规备份。</div>
             <div class="dm-actions" style="margin-top:10px"><button class="btn btn-primary" id="mgGo">${ICONS.download} 生成迁移包并下载</button></div>
           </div>
           <div class="dm-step"><span class="no">2</span><b>新服务器：部署同版本代码并导入</b>
-            <div class="dm-note">在新服务器部署相同版本的工作台代码（空库启动），以管理员登录后进入「数据管理 → 备份与恢复」，上传本迁移包 → 预检（自动逐集合 sha256 校验 + 条数对比）→ 输入确认短语执行恢复。</div>
+            <div class="dm-note">在新服务器部署相同版本的工作台代码（空库启动），以管理员登录后进入「数据管理 → 备份与恢复」，上传本迁移包（.zip）→ 预检（自动逐集合 sha256 校验 + 附件逐个核对 + 条数对比）→ 输入确认短语执行恢复。迁移包为新格式（zip），需修改80 及以上版本导入。</div>
           </div>
           <div class="dm-step"><span class="no">3</span><b>一致性校验与切换</b>
             <div class="dm-note">恢复完成后逐项核对：<br/>
             ① 管理员可登录（密码为迁移包内账号数据）；<br/>
-            ② 「数据总览」各集合条数与迁移包一致；<br/>
+            ② 「数据总览」各集合条数与迁移包一致（附件文件一行会显示恢复后的图片数量）；<br/>
             ③ 抽查最近一条考勤记录与任课老师确认链接可正常打开；<br/>
             ④ 全部通过后切换访问入口；旧服务器转只读冻结建议 ≥ 7 天，作为最终回滚保底。</div>
           </div>
@@ -412,7 +414,7 @@ export default {
       bodyEl.querySelector('#mgGo').onclick = async () => {
         try {
           const meta = await doBackup('migration');
-          await apiDownload(`/api/data/bundles/${encodeURIComponent(meta.id)}/download`, `${meta.id}.json`);
+          await apiDownload(`/api/data/bundles/${encodeURIComponent(meta.id)}/download`, meta.file || `${meta.id}.zip`);
         } catch (e) {
           toast(e.message, 'error');
         }

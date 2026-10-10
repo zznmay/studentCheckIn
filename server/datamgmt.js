@@ -1,13 +1,19 @@
 'use strict';
 // ==================== 数据管理（备份 / 恢复 / 迁移 / 灰测留存） ====================
-// 零依赖实现。统一「数据包（Bundle）」格式：
-// { kind, label, schemaVersion, appVersion, exportedAt, source, counts, collections, manifest }
+// 零依赖实现。统一「数据包（Bundle）」逻辑格式：
+// { kind, label, schemaVersion, appVersion, exportedAt, source, counts, collections, manifest, attachments }
 // manifest 内逐集合记录 count + sha256，导入侧必须复核，任一不符拒绝落盘。
+// 修改80：schemaVersion 1 → 2 —— 集合内不再内嵌 base64 图片（改为内容寻址引用），
+// 数据包落盘为 zip 容器：bundle.json（集合+引用+附件清单）+ attachments/<sha256>（附件树）。
+// zip 自包含 → 迁移到新服务器时附件随包落盘；v1 旧包（内嵌 base64 的纯 JSON）仍可导入，
+// 导入时自动转换为引用（见 resolveBundle / applyBundle）。
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const store = require('./store');
+const attachments = require('./attachments');
+const { zipStore, zipRead } = require('./xlsx');
 const { json, readBody, nowISO, uid } = require('./utils');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -17,7 +23,7 @@ const AUTO_DIR = path.join(DATA_DIR, 'auto-backups'); // 定时自动备份（�
 // 修改79：分片上传暂存区（大数据包专用，见 /api/data/restore/upload）
 const UPLOAD_DIR = path.join(DATA_DIR, 'tmp-uploads');
 const OPLOG_FILE = path.join(DATA_DIR, 'oplog.json');
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const APP_VERSION = '2.1';
 const KEEP_BACKUPS = 30;
 // 数组型集合（恢复时整体替换）；settings 为对象、staffs 为数组，均参与备份
@@ -50,6 +56,36 @@ function oplog(user, action, detail) {
 }
 
 // ---------- 数据包（Bundle） ----------
+/** 扫描集合里被引用的附件 sha256（修改80）：只收实际被引用的，不打包 data/attachments 全目录 */
+function collectAttachmentRefs(collections) {
+  const refs = new Map(); // sha256 -> {sha256, mime, size}
+  const add = (ref) => {
+    if (!ref || !/^[0-9a-f]{64}$/.test(String(ref.sha256 || ''))) return;
+    const sha = String(ref.sha256);
+    if (refs.has(sha)) return;
+    let size = Number(ref.size);
+    if (!Number.isFinite(size)) {
+      try {
+        size = fs.statSync(attachments.fileOf(sha)).size;
+      } catch {
+        size = 0;
+      }
+    }
+    refs.set(sha, { sha256: sha, mime: String(ref.mime || 'image/png'), size });
+  };
+  for (const s of collections.attendance || []) {
+    if (s && s.signatureRef) add(s.signatureRef);
+    if (s && typeof s.signature === 'string' && s.signature.startsWith('data:')) add({ sha256: sha256(s.signature) });
+  }
+  for (const a of collections.appeals || []) {
+    for (const x of (a && a.attachments) || []) {
+      if (x && x.sha256) add(x);
+      else if (x && typeof x.dataUrl === 'string' && x.dataUrl.startsWith('data:')) add({ sha256: sha256(x.dataUrl) });
+    }
+  }
+  return Object.fromEntries(refs);
+}
+
 function makeBundle(kind, label, source) {
   const collections = {};
   for (const k of ARRAY_KEYS) collections[k] = clone(store.db[k] || []);
@@ -66,11 +102,51 @@ function makeBundle(kind, label, source) {
     counts: Object.fromEntries(ALL_KEYS.map((k) => [k, manifest[k].count])),
     collections,
     manifest,
+    attachments: collectAttachmentRefs(collections), // 修改80：附件清单（sha256 → {size, mime}）
   };
 }
 
-/** 校验数据包完整性与清单一致性，返回 { ok, checks } */
-function verifyBundle(bundle) {
+/** 修改80：bundle → zip 字节流（bundle.json + attachments/<sha256>）
+ *  容错：个别附件文件缺失时不抛错——跳过该附件并在 bundle.attachmentsMissing 标记。
+ *  否则「记录引用在、文件丢了」的损坏态会让备份/快照整体失败（无法备份、无法自愈）。
+ *  注意这只影响**导出**：导入侧 verifyBundle 仍要求 attMap 中附件齐全，缺一即拒绝落盘。 */
+function buildBundleZip(bundle) {
+  const files = [{ name: 'bundle.json', data: Buffer.from(JSON.stringify(bundle, null, 2), 'utf8') }];
+  const missing = [];
+  for (const [sha] of Object.entries(bundle.attachments || {})) {
+    const f = attachments.fileOf(sha);
+    if (!fs.existsSync(f)) {
+      missing.push(sha);
+      continue;
+    }
+    files.push({ name: `attachments/${sha}`, data: fs.readFileSync(f) });
+  }
+  if (missing.length) {
+    bundle.attachmentsMissing = missing;
+    console.warn(`[datamgmt] ${missing.length} 个附件文件缺失，已跳过打包：${missing.map((s) => `${s.slice(0, 8)}…`).join(' ')}`);
+  }
+  return zipStore(files);
+}
+
+/** 修改80：读取数据包文件 → { bundle, attMap }；.zip 走 zipRead，.json 为 v1 旧包（无附件） */
+function loadBundleFile(file) {
+  if (!/\.zip$/i.test(file)) {
+    return { bundle: JSON.parse(fs.readFileSync(file, 'utf8')), attMap: null };
+  }
+  const entries = zipRead(fs.readFileSync(file));
+  const bj = entries['bundle.json'];
+  if (!bj) throw new Error('数据包缺少 bundle.json（不是有效的备份包）');
+  const attMap = new Map();
+  for (const [name, buf] of Object.entries(entries)) {
+    if (name.startsWith('attachments/') && name.length > 'attachments/'.length) attMap.set(name.slice('attachments/'.length), buf);
+  }
+  return { bundle: JSON.parse(bj.toString('utf8')), attMap };
+}
+
+/** 校验数据包完整性与清单一致性，返回 { ok, checks }
+ *  修改80：schemaVersion 1/2 双接受；v2 且带附件清单时逐个核对附件 sha256 + 字节数
+ *  （zipRead 不校验 CRC，这里补强校验：缺附件或内容不符一律拒绝） */
+function verifyBundle(bundle, attMap) {
   const checks = [];
   let ok = true;
   if (!bundle || typeof bundle !== 'object' || !bundle.collections || !bundle.manifest) {
@@ -93,6 +169,22 @@ function verifyBundle(bundle) {
     checks.push({ key: k, ok: okKey, message: okKey ? '校验通过' : '清单不符（内容或条数与导出时不一致）' });
     if (!okKey) ok = false;
   }
+  // 修改80：附件清单校验（v1 旧包无 attachments 键 → 跳过，导入时按内嵌形态自动转换）
+  const attList = bundle.attachments && typeof bundle.attachments === 'object' ? Object.entries(bundle.attachments) : [];
+  if (attList.length) {
+    let bad = 0;
+    for (const [sha, info] of attList) {
+      const buf = attMap && attMap.get(sha);
+      if (!buf) {
+        bad += 1;
+        continue;
+      }
+      if (attachments.sha256Buf(buf) !== sha || (info && info.size != null && buf.length !== info.size)) bad += 1;
+    }
+    const total = attList.length;
+    checks.push({ key: 'attachments', ok: bad === 0, message: bad === 0 ? `校验通过（${total} 个附件）` : `${bad}/${total} 个附件缺失或内容不符` });
+    if (bad) ok = false;
+  }
   return { ok, checks };
 }
 
@@ -101,8 +193,9 @@ function saveBundle(bundle, dir) {
   const p = (n) => String(n).padStart(2, '0');
   const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   const id = `${bundle.kind === 'migration' ? 'migration' : bundle.kind === 'archive' ? 'gray-archive' : bundle.kind === 'auto-backup' ? 'auto' : 'snap'}-${ts}-${uid('x').slice(-4)}`;
-  const file = path.join(dir, `${id}.json`);
-  fs.writeFileSync(file, JSON.stringify(bundle, null, 2), 'utf8');
+  // 修改80：数据包落盘为 zip（bundle.json + attachments/），保证迁移自包含
+  const file = path.join(dir, `${id}.zip`);
+  fs.writeFileSync(file, buildBundleZip(bundle));
   const meta = {
     id,
     kind: bundle.kind,
@@ -110,7 +203,10 @@ function saveBundle(bundle, dir) {
     exportedAt: bundle.exportedAt,
     source: bundle.source,
     counts: bundle.counts,
-    size: fs.statSync(file).size,
+    schemaVersion: bundle.schemaVersion || 1,
+    attachmentCount: Object.keys(bundle.attachments || {}).length, // 修改80：附件个数（列表展示用）
+    attachmentsMissing: (bundle.attachmentsMissing || []).length, // 导出时发现的文件缺失数（>0 说明该环境附件不完整）
+    size: fs.statSync(file).size, // zip 文件字节数
     dir: path.basename(dir),
     file: path.basename(file),
   };
@@ -136,8 +232,11 @@ function listBundles() {
 
 function findBundle(id) {
   for (const dir of [BACKUP_DIR, ARCHIVE_DIR, AUTO_DIR]) {
-    const f = path.join(dir, `${id}.json`);
-    if (fs.existsSync(f)) return { file: f, dir };
+    // 修改80：先找 zip（v2 新包），再回落 json（v1 旧包，历史灾备仍可用）
+    for (const ext of ['.zip', '.json']) {
+      const f = path.join(dir, `${id}${ext}`);
+      if (fs.existsSync(f)) return { file: f, dir };
+    }
   }
   return null;
 }
@@ -189,15 +288,24 @@ function pruneBackups() {
     .map((f) => JSON.parse(fs.readFileSync(path.join(BACKUP_DIR, f), 'utf8')))
     .sort((a, b) => String(b.exportedAt).localeCompare(String(a.exportedAt)));
   for (const m of metas.slice(KEEP_BACKUPS)) {
-    for (const suffix of ['.json', '.meta.json']) {
+    for (const suffix of ['.json', '.zip', '.meta.json']) { // 修改80：zip 为新包格式，json 为历史 v1 包
       const f = path.join(BACKUP_DIR, `${m.id}${suffix}`);
       if (fs.existsSync(f)) fs.unlinkSync(f);
     }
   }
 }
 
-/** 恢复应用：整体替换各集合并落盘（调用方须已完成校验并做过恢复前快照） */
-function applyBundle(bundle) {
+/** 恢复应用：整体替换各集合并落盘（调用方须已完成校验并做过恢复前快照）
+ *  修改80：① 附件先落盘合并进 data/attachments（内容寻址天然去重）；
+ *         ② v1 旧包（内嵌 base64）统一在此转换为引用 —— 三条导入路径的唯一收口点 */
+function applyBundle(bundle, attMap) {
+  for (const [sha, buf] of attMap || new Map()) {
+    if (!attachments.has(sha)) {
+      const info = (bundle.attachments || {})[sha] || {};
+      attachments.putBuffer(buf, info.mime || 'image/png');
+    }
+  }
+  attachments.externalizeCollections(bundle.collections); // v1 内嵌 → 引用（幂等；失败项保留原样）
   for (const k of ARRAY_KEYS) {
     store.db[k] = bundle.collections[k] || [];
     store.save(k);
@@ -302,9 +410,12 @@ function register({ route, fail }) {
       } catch {
         /* 文件尚不存在 */
       }
-      const count = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 : 0;
-      return { key: k, count, bytes, mtime };
-    });
+const count = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 : 0;
+    return { key: k, count, bytes, mtime };
+  });
+    // 修改80：附件（签名 / 异议佐证材料）已外置为内容寻址文件，单列一行便于迁移后核对是否齐备
+    const attStat = attachments.attachmentStats();
+    collections.push({ key: 'attachments', count: attStat.count, bytes: attStat.bytes, mtime: '' });
     const bundles = listBundles();
     const backups = bundles.filter((b) => b.dir === 'backups');
     const archives = bundles.filter((b) => b.dir === 'archives');
@@ -349,9 +460,11 @@ function register({ route, fail }) {
     if (!hit) fail(404, '数据包不存在或已被清理');
     const body = fs.readFileSync(hit.file);
     oplog(user, '下载数据包', params.id);
+    // 修改80：按实际后缀决定类型与文件名（.zip 新包自包含附件；.json 为历史 v1 包）
+    const ext = /\.zip$/i.test(hit.file) ? '.zip' : '.json';
     res.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Content-Disposition': `attachment; filename="${params.id}.json"; filename*=UTF-8''${encodeURIComponent(params.id + '.json')}`,
+      'Content-Type': ext === '.zip' ? 'application/zip' : 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${params.id}${ext}"; filename*=UTF-8''${encodeURIComponent(params.id + ext)}`,
     });
     res.end(body);
   });
@@ -416,13 +529,18 @@ function register({ route, fail }) {
     json(res, 200, { ok: true, done: true, bytes: Buffer.byteLength(text, 'utf8') });
   });
 
-  // 修改79：预检与恢复统一入口 —— bundle（内联小包）/ id（服务端已有包）/ uploadId（分片上传）
+  // 修改79/80：预检与恢复统一入口 —— bundle（内联小包）/ id（服务端已有包）/ uploadId（分片上传）
+  // 返回 { bundle, attMap }：attMap 为 zip 包携带的附件表（sha256 → Buffer），v1 旧包为 null
   function resolveBundle(body) {
-    if (body.bundle && typeof body.bundle === 'object') return body.bundle;
+    if (body.bundle && typeof body.bundle === 'object') return { bundle: body.bundle, attMap: null };
     if (body.id) {
       const hit = findBundle(String(body.id));
       if (!hit) fail(404, '数据包不存在或已被清理');
-      return JSON.parse(fs.readFileSync(hit.file, 'utf8'));
+      try {
+        return loadBundleFile(hit.file);
+      } catch (e) {
+        fail(400, `数据包读取失败：${e.message}`);
+      }
     }
     if (body.uploadId) {
       const f = findUpload(body.uploadId);
@@ -434,25 +552,28 @@ function register({ route, fail }) {
 
   // 恢复预检：校验数据包 + 与当前数据条数对比（不落盘）
   route('POST', '/api/data/restore/preview', admin, async ({ res, body }) => {
-    const bundle = resolveBundle(body);
-    const { ok, checks } = verifyBundle(bundle);
+    const { bundle, attMap } = resolveBundle(body);
+    const { ok, checks } = verifyBundle(bundle, attMap);
     const diff = ALL_KEYS.map((k) => {
       const cur = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 : 0;
       const inc = Array.isArray(bundle.collections[k]) ? bundle.collections[k].length : 1;
       return { key: k, current: cur, incoming: inc };
     });
-    json(res, 200, { ok, checks, diff, bundleMeta: { kind: bundle.kind, label: bundle.label, exportedAt: bundle.exportedAt, appVersion: bundle.appVersion, source: bundle.source } });
+    // 修改80：附件文件计数（信息性展示，不参与 ok 判定；校验由 checks 里的 attachments 项承担）
+    const attStat = attachments.attachmentStats();
+    diff.push({ key: 'attachments', current: attStat.count, incoming: Object.keys(bundle.attachments || {}).length });
+    json(res, 200, { ok, checks, diff, bundleMeta: { kind: bundle.kind, label: bundle.label, exportedAt: bundle.exportedAt, appVersion: bundle.appVersion, source: bundle.source, schemaVersion: bundle.schemaVersion || 1 } });
   });
 
   // 恢复：需确认短语；恢复前自动做 pre-restore 快照（可回滚）
   route('POST', '/api/data/restore', admin, async ({ res, user, body }) => {
     if (String(body.confirm || '').trim() !== '恢复') fail(400, '请输入确认短语「恢复」以执行该操作');
-    const bundle = resolveBundle(body);
-    const { ok, checks } = verifyBundle(bundle);
+    const { bundle, attMap } = resolveBundle(body);
+    const { ok, checks } = verifyBundle(bundle, attMap);
     if (!ok) fail(400, `数据包校验未通过：${checks.filter((c) => !c.ok).map((c) => `${c.key}(${c.message})`).join('；')}`);
     const pre = saveBundle(makeBundle('backup', '恢复前自动快照', 'workbuddy-sites'), BACKUP_DIR);
     pruneBackups();
-    applyBundle(bundle);
+    applyBundle(bundle, attMap);
     // 修改79：恢复成功后释放分片上传的临时成品（可按 uploadId 重传，无需保留）
     try {
       const f = findUpload(body.uploadId);
