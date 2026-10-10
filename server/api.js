@@ -350,6 +350,14 @@ function leaveCoverageDesc(lv, cfg) {
  * 同时回写该生当天相关假单的覆盖节次、生效节次、状态与说明。
  */
 function reconcileStudentDate(className, date, studentId, studentName) {
+  // 修改81：日志捕获窗口内，先留存涉及会话的变更前快照（保留首帧，重复触碰不覆盖）
+  if (attLogCapture) {
+    for (const s of store.db.attendance) {
+      if (s.date === date && s.className === className && !attLogCapture.has(s.id)) {
+        attLogCapture.set(s.id, s.items.map((it) => ({ ...it })));
+      }
+    }
+  }
   const leaves = store.db.leaves.filter((lv) => {
     const { s, e } = leaveRange(lv);
     return s && e && date >= s && date <= e && lv.className === className && studentMatch(lv, studentId, studentName);
@@ -490,6 +498,99 @@ function reconcileLeavesForSession(session) {
     touched = true;
   }
   return touched;
+}
+
+// ==================== 修改81：考勤修改日志 ====================
+/**
+ * 时间线数据源：点名记录 新增 / 人工修改 / 任课老师签字确认 / 假单对账改判 / 异议改判 时写入。
+ * 结构：{ id, sessionId, action, at, operator, changes?, summary?, via? }
+ *   - action：create(发起点名) | update(人工修改) | system(假单自动校正) | confirm(任课老师签字)
+ *   - operator：{ id, username, name, roles[], system?, external? } 操作人快照（账号删除后日志仍可读）
+ *   - changes：[{ studentId, name, field: status|note|confirmStatus, before, after }] 字段级变更
+ *   - summary：{ total, counts }（仅 create，初始四态概况）
+ *   - via：附加来源说明（如「异议改判」），可选
+ * 只记真实 diff、不存整表快照以控制集合体积；单条记录日志上限 ATT_LOG_LIMIT 条。
+ */
+const ATT_LOG_LIMIT = 500;
+
+/** 操作人快照（姓名 + 账号 + 当时角色集合） */
+function attendanceLogOperator(user) {
+  return { id: user.id, username: user.username, name: user.name, roles: rolesOf(user) };
+}
+/** 系统操作人（假单对账自动改判，非人工操作） */
+const ATT_LOG_SYSTEM_OPERATOR = { id: '', username: '', name: '假单自动校正', roles: [], system: true };
+
+/** 逐字段 diff 两组考勤条目（按 studentId 对齐），返回变更明细 */
+function diffAttendanceItems(before, after) {
+  const prev = new Map((before || []).map((it) => [String(it.studentId), it]));
+  const changes = [];
+  for (const it of after || []) {
+    const b = prev.get(String(it.studentId));
+    if (!b) continue; // 条目集合仅在创建时生成，更新场景前后一一对应
+    if (b.status !== it.status) {
+      changes.push({ studentId: it.studentId, name: it.name, field: 'status', before: b.status, after: it.status });
+    }
+    if (String(b.note || '') !== String(it.note || '')) {
+      changes.push({ studentId: it.studentId, name: it.name, field: 'note', before: String(b.note || ''), after: String(it.note || '') });
+    }
+  }
+  return changes;
+}
+
+/** 追加一条日志；同一记录超上限时裁掉最旧（调用方随后统一 save('attendanceLogs')） */
+function appendAttendanceLog(entry) {
+  const logs = store.db.attendanceLogs;
+  logs.push(entry);
+  const same = logs.filter((l) => l.sessionId === entry.sessionId);
+  if (same.length > ATT_LOG_LIMIT) {
+    const drop = new Set(same.slice(0, same.length - ATT_LOG_LIMIT).map((l) => l.id));
+    store.db.attendanceLogs = logs.filter((l) => !drop.has(l.id));
+  }
+}
+
+/** 点名记录被删除（单删 / 批删）时清理其关联日志 */
+function pruneAttendanceLogs(sessionIds) {
+  const drop = new Set((sessionIds || []).filter(Boolean));
+  if (!drop.size) return;
+  const before = store.db.attendanceLogs.length;
+  store.db.attendanceLogs = store.db.attendanceLogs.filter((l) => !drop.has(l.sessionId));
+  if (store.db.attendanceLogs.length !== before) store.save('attendanceLogs');
+}
+
+/**
+ * 假单对账改判的日志捕获窗口。reconcileStudentDate 被点名保存 / 假单导入 / 应用 / 删除等
+ * 多个流程复用，且逐学生、逐日多次触碰同一记录——直接在其内部写日志会把一次保存拆成 N 条碎片。
+ * 约定：begin 留存各会话「首帧」快照（重复触碰不覆盖），end 统一 diff，
+ * 每个发生变更的会话只落一条 system 日志。begin/end 必须成对紧包 reconcile 调用，
+ * 窗口内不得有 fail() 抛出路径（现有调用点均已满足）。
+ */
+let attLogCapture = null;
+function beginAttendanceLogCapture() {
+  attLogCapture = new Map();
+}
+function endAttendanceLogCapture() {
+  const cap = attLogCapture;
+  attLogCapture = null;
+  if (!cap || !cap.size) return;
+  let logged = false;
+  for (const [sid, before] of cap) {
+    const s = store.db.attendance.find((x) => x.id === sid);
+    if (!s) continue;
+    const changes = diffAttendanceItems(before, s.items);
+    if (!changes.length) continue;
+    appendAttendanceLog({ id: uid('alog'), sessionId: sid, action: 'system', at: nowISO(), operator: ATT_LOG_SYSTEM_OPERATOR, changes });
+    logged = true;
+  }
+  if (logged) store.save('attendanceLogs');
+}
+
+/** 修改人账号脱敏（只读角色查看日志时）：保留前 4 后 2，中间打星；
+ *  过短账号（<8 位）按「前4+后2」会泄露全部或大部分字符（如 admin），仅留首字符 */
+function maskAccount(u) {
+  const s = String(u || '');
+  if (!s) return '';
+  if (s.length < 8) return s[0] + '***';
+  return s.slice(0, 4) + '***' + s.slice(-2);
 }
 
 // ==================== 认证 ====================
@@ -2244,6 +2345,32 @@ route('GET', '/api/attendance/:id', {}, async ({ res, user, params }) => {
   json(res, 200, { session: { ...s, counts: sessionCounts(s) } });
 });
 
+// ==================== 修改81：考勤修改日志查询（时间线数据源） ====================
+// 查看权限与点名详情接口完全一致（纯纪律委员限本班，其余可查看详情的角色均可看）。
+// 按时间倒序返回；修改人账号按查看角色脱敏：管理员 / 权益部 / 学院考勤负责老师
+// （可更正考勤的角色）明文；只读角色（纪律委员 / 班主任 / 辅导员）账号打星且不回传
+// 操作人 id —— 服务端脱敏，不依赖前端自觉。字段脱敏边界：学生姓名 / 学号 / 状态 / 备注
+// 与详情页明细表同口径展示，不额外打星（打星反而与上方明细对不上）。
+route('GET', '/api/attendance/:id/logs', {}, async ({ res, user, params }) => {
+  const s = store.db.attendance.find((x) => x.id === params.id);
+  if (!s) fail(404, '点名记录不存在');
+  if (hasRole(user, 'discipline') && !hasAnyRole(user, ['admin', 'rights', 'collegeOfficer']) && !(user.classes || []).includes(s.className)) fail(403, '没有权限查看该记录');
+  const privileged = hasAnyRole(user, ['admin', 'rights', 'collegeOfficer']);
+  const logs = (store.db.attendanceLogs || [])
+    .filter((l) => l.sessionId === params.id)
+    .sort((a, b) => String(b.at).localeCompare(String(a.at))) // 时间倒序；同毫秒由稳定排序保持写入序
+    .slice(0, ATT_LOG_LIMIT)
+    .map((l) => {
+      if (privileged) return l;
+      const op = l.operator || {};
+      return {
+        ...l,
+        operator: { ...op, id: undefined, username: op.username ? maskAccount(op.username) : op.username },
+      };
+    });
+  json(res, 200, { masked: !privileged, logs });
+});
+
 route('POST', '/api/attendance', { roles: ['discipline', 'admin', 'rights', 'collegeOfficer'] }, async ({ res, user, body }) => {
   const className = String(body.className || '').trim();
   const date = String(body.date || '');
@@ -2294,9 +2421,22 @@ route('POST', '/api/attendance', { roles: ['discipline', 'admin', 'rights', 'col
     confirmStatus: 'pending',
   };
   store.db.attendance.push(session);
+  // 修改81：日志 ① 发起点名（发起人 + 初始四态概况；取假单复核前的原始提交状态）
+  const preReconcile = session.items.map((it) => ({ ...it }));
+  appendAttendanceLog({
+    id: uid('alog'),
+    sessionId: session.id,
+    action: 'create',
+    at: now,
+    operator: attendanceLogOperator(user),
+    summary: { total: preReconcile.length, counts: sessionCounts({ items: preReconcile }) },
+  });
   // 保存后即时套用该班当天已通过假单（覆盖节次缺勤→请假，未覆盖请假→缺勤）
+  beginAttendanceLogCapture();
   const touched = reconcileLeavesForSession(session);
+  endAttendanceLogCapture(); // 修改81：对账改判落「假单自动校正」system 日志
   store.save('attendance');
+  store.save('attendanceLogs');
   if (touched) store.save('leaves');
   // 修改30：点名提交改变缺勤节数 → 重算相关学生处分
   recalcPunishmentsByPairs(session.items.map((it) => ({ className: session.className, studentId: it.studentId })));
@@ -2315,6 +2455,8 @@ route('PUT', '/api/attendance/:id', {}, async ({ res, user, params, body }) => {
     return json(res, 403, { message: '班主任 / 辅导员为只读角色，仅可查看考勤记录' });
   }
   if (!Array.isArray(body.items) || !body.items.length) fail(400, '请提供要修改的考勤条目');
+  // 修改81：人工修改前快照（与假单复核区分：本段 diff = 操作人的真实改动）
+  const beforeUser = s.items.map((it) => ({ ...it }));
   const map = new Map(s.items.map((it) => [it.studentId, it]));
   let changed = 0;
   for (const it of body.items) {
@@ -2332,11 +2474,27 @@ route('PUT', '/api/attendance/:id', {}, async ({ res, user, params, body }) => {
       }
     }
   }
+  const now = nowISO();
   s.updatedBy = user.name;
-  s.updatedAt = nowISO();
+  s.updatedAt = now;
+  // 修改81：日志 ② 人工修改（仅存在真实字段变更时写入，避免空保存刷日志）
+  const userChanges = diffAttendanceItems(beforeUser, s.items);
+  if (userChanges.length) {
+    appendAttendanceLog({
+      id: uid('alog'),
+      sessionId: s.id,
+      action: 'update',
+      at: now,
+      operator: attendanceLogOperator(user),
+      changes: userChanges,
+    });
+    store.save('attendanceLogs');
+  }
   // 任课老师只需在下课后签字确认一次；考勤记录被人工修改后，确认状态保持有效，无需重新确认。
   // 保存后即时套用该班当天已通过假单（覆盖节次的缺勤仍会被自动改为请假）
+  beginAttendanceLogCapture();
   const touchedLeaves = reconcileLeavesForSession(s);
+  endAttendanceLogCapture(); // 修改81：对账改判落「假单自动校正」system 日志
   store.save('attendance');
   if (touchedLeaves) store.save('leaves');
   // 修改30：更正考勤状态改变缺勤节数 → 重算相关学生处分
@@ -2350,6 +2508,7 @@ route('DELETE', '/api/attendance/:id', { roles: ['admin'] }, async ({ res, param
   if (idx < 0) fail(404, '点名记录不存在');
   // 修改30：删除前先记下涉及学生，删除后重算其处分（缺勤节数会回落）
   const affected = store.db.attendance[idx].items.map((it) => ({ className: store.db.attendance[idx].className, studentId: it.studentId }));
+  pruneAttendanceLogs([store.db.attendance[idx].id]); // 修改81：同步清理该记录的修改日志
   store.db.attendance.splice(idx, 1);
   store.save('attendance');
   recalcPunishmentsByPairs(affected);
@@ -2365,7 +2524,10 @@ route('POST', '/api/attendance/batch-delete', { roles: ['admin'] }, async ({ res
   const before = store.db.attendance.length;
   store.db.attendance = store.db.attendance.filter((s) => !ids.has(s.id));
   const deleted = before - store.db.attendance.length;
-  if (deleted) store.save('attendance');
+  if (deleted) {
+    store.save('attendance');
+    pruneAttendanceLogs([...ids]); // 修改81：同步清理被删记录的修改日志
+  }
   recalcPunishmentsByPairs(affected);
   json(res, 200, { deleted });
 });
@@ -2408,7 +2570,17 @@ route('POST', '/api/confirm/:token', { public: true }, async ({ res, params, bod
   s.confirmedName = name;
   s.confirmedAt = nowISO();
   s.signature = signature;
+  // 修改81：签字确认同样属于记录变更 → 落日志（确认人免登录无账号，external 标记）
+  appendAttendanceLog({
+    id: uid('alog'),
+    sessionId: s.id,
+    action: 'confirm',
+    at: s.confirmedAt,
+    operator: { id: '', username: '', name, roles: [], external: true },
+    changes: [{ field: 'confirmStatus', before: '待确认', after: '已确认' }],
+  });
   store.save('attendance');
+  store.save('attendanceLogs');
   json(res, 200, { ok: true, confirmedName: name, confirmedAt: s.confirmedAt });
 });
 
@@ -2536,12 +2708,15 @@ function importLeaveRows(rows, user, initialErrors = []) {
   });
   let appliedLeaves = 0;
   let revertedTotal = 0;
+  // 修改81：捕获整批导入的对账改判 → 每个变更会话合并为一条「假单自动校正」日志
+  beginAttendanceLogCapture();
   for (const lv of created) {
     store.db.leaves.push(lv);
     const r2 = reconcileLeaveAllDays(lv);
     if (lv.status === '已生效') appliedLeaves++;
     revertedTotal += r2.reverted;
   }
+  endAttendanceLogCapture();
   store.save('leaves');
   store.save('attendance');
   // 修改30：假单对账改判影响缺勤节数 → 重算导入涉及学生的处分
@@ -2719,7 +2894,9 @@ route('POST', '/api/leaves/:id/apply', { roles: ['admin', 'rights', 'collegeOffi
   const lv = store.db.leaves.find((l) => l.id === params.id);
   if (!lv) fail(404, '假单不存在');
   // 「重新应用」逐天对账：跨多天假单的中间日考勤也要改判（此前只刷 startDate 单日导致无效）
+  beginAttendanceLogCapture(); // 修改81：改判落「假单自动校正」日志
   const r = reconcileLeaveAllDays(lv);
+  endAttendanceLogCapture();
   // 修改30：对账改判影响缺勤节数 → 重算该生处分
   recalcPunishmentsByPairs([{ className: lv.className, studentId: lv.studentId }]);
   json(res, 200, { leave: lv, applied: r.applied, reverted: r.reverted });
@@ -2732,7 +2909,9 @@ route('DELETE', '/api/leaves/:id', { roles: ['admin', 'rights', 'collegeOfficer'
   store.db.leaves.splice(idx, 1);
   store.save('leaves');
   // 删除后逐天重新对账：失去覆盖的"请假"逐日改回"缺勤"（跨天假单每一天都要 revert）
+  beginAttendanceLogCapture(); // 修改81：改判落「假单自动校正」日志
   const r = reconcileLeaveAllDays(lv);
+  endAttendanceLogCapture();
   store.save('leaves');
   store.save('attendance');
   // 修改30：删除假单后失去覆盖 → 缺勤回升，重算该生处分
@@ -3918,10 +4097,23 @@ route('POST', '/api/appeals/:id/resolve', { roles: APPEAL_REVIEW_ROLES }, async 
     item.status = to;
     session.updatedBy = `${user.name}（异议改判）`;
     session.updatedAt = nowISO();
+    // 修改81：异议改判写入修改日志（操作人=审核人，via 标注来源）
+    appendAttendanceLog({
+      id: uid('alog'),
+      sessionId: session.id,
+      action: 'update',
+      at: session.updatedAt,
+      operator: attendanceLogOperator(user),
+      via: '异议改判',
+      changes: [{ studentId: a.studentId, name: a.studentName, field: 'status', before: from, after: to }],
+    });
     resolveItems.push({ sessionId: r.sessionId, date: r.date, from, to, applied: true });
   }
   const changed = resolveItems.filter((x) => x.applied).length;
-  if (changed > 0) store.save('attendance');
+  if (changed > 0) {
+    store.save('attendance');
+    store.save('attendanceLogs');
+  }
   a.resolveInfo = { resolver: `${user.name}(${user.username})`, resolvedAt: nowISO(), items: resolveItems };
   a.status = 'resolved';
   a.updatedAt = nowISO();

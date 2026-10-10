@@ -3707,4 +3707,65 @@ html[data-theme="dark"] .m-login .m-input-wrap input::placeholder { color: var(-
   .m-login .m-illus-bolt,
   .m-login .m-card { animation: none !important; }
   .m-login .m-card { opacity: 1; transform: none; }
+}/* ==================== 修改81：点名详情「修改日志」时间线（lg-*，桌面卡片 + 手机区块共用） ====================
+   桌面层：学生考勤表格卡片之后独立卡片；手机层：名单区块之后 .rd-logs 区块（锚点 tab 跳转）。
+   时间线：左侧节点圆点 + 竖向连接线，右侧条目（操作人/账号/角色 + 动作标签 + 时间 + 字段级变更）。
+   配色全走既有 token（四态语义色 / --text 层级 / --surface），深浅主题自动适配；零裸 hex。 */
+.lg-timeline { position: relative; padding-left: 18px; }
+.lg-timeline::before {
+  content: '';
+  position: absolute; left: 5px; top: 8px; bottom: 8px;
+  width: 2px; border-radius: 2px;
+  background: var(--border-light);
+}
+.lg-item { position: relative; padding: 0 0 16px 8px; }
+.lg-item:last-child { padding-bottom: 2px; }
+.lg-dot {
+  position: absolute; left: -18px; top: 5px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--surface);
+}
+/* 动作语义色节点：发起=蓝 / 修改=橙 / 系统=灰 / 确认=绿 */
+.lg-item.lg-create .lg-dot { background: var(--solid-blue); }
+.lg-item.lg-update .lg-dot { background: var(--solid-orange); }
+.lg-item.lg-system .lg-dot { background: var(--border-strong); }
+.lg-item.lg-confirm .lg-dot { background: var(--solid-green); }
+.lg-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.lg-name { font-size: 13.5px; color: var(--text); overflow-wrap: anywhere; }
+.lg-acc {
+  padding: 1px 7px; border-radius: var(--radius-full);
+  background: var(--surface-3); color: var(--text-3);
+  font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.lg-role { font-size: 11.5px; color: var(--text-3); }
+.lg-time { margin-left: auto; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.lg-changes { display: flex; flex-direction: column; gap: 4px; }
+.lg-chg {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 12.5px; line-height: 1.5; color: var(--text-2);
+}
+.lg-stu { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.lg-sid { font-style: normal; font-size: 11.5px; color: var(--text-3); margin-left: 4px; }
+.lg-field { color: var(--text-3); }
+.lg-arrow { color: var(--text-3); }
+.lg-val { font-weight: 600; }
+.lg-val.lg-plain { color: var(--text); overflow-wrap: anywhere; }
+.lg-none { font-style: normal; color: var(--text-3); font-weight: 400; }
+/* 四态语义色（timeline 内独立命名，避免与 rd-sc 的 .st-* 作用域耦合） */
+.lg-st-green { color: var(--success-fg); }
+.lg-st-orange { color: var(--warn-fg); }
+.lg-st-red { color: var(--danger-fg); }
+.lg-st-blue { color: var(--info-fg); }
+.lg-st-gray { color: var(--neutral-fg); }
+.lg-empty { padding: 14px 0 6px; font-size: 13px; color: var(--text-3); text-align: center; }
+
+/* 手机层：时间线区块与整体版式节奏一致（≤720px；>720px 由桌面卡片布局接管） */
+@media (max-width: 720px) {
+  .lg-timeline { padding-left: 16px; }
+  .lg-item { padding-bottom: 14px; }
+  .lg-dot { left: -16px; top: 4.5px; width: 9px; height: 9px; box-shadow: 0 0 0 2.5px var(--surface); }
+  .lg-name { font-size: 13px; }
+  .lg-chg { font-size: 12px; }
+  .lg-time { font-size: 11px; }
 }

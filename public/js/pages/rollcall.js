@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { getUser, hasRole, hasAnyRole } from '../session.js';
-import { esc, toast, confirmDialog, renderPager, PERIODS, STATUSES, STATUS_CLS, countMini, periodTags, fmtTime, today, statusTag, ICONS, enhanceTables, upgradeSelectToCombo } from '../ui.js';
+import { esc, toast, confirmDialog, renderPager, PERIODS, STATUSES, STATUS_CLS, countMini, periodTags, fmtTime, today, statusTag, ROLE_NAMES, ICONS, enhanceTables, upgradeSelectToCombo } from '../ui.js';
 
 // ==================== 公共 ====================
 function segCell(item, disabled) {
@@ -775,6 +775,75 @@ function weekdayCn(dateStr) {
   return '周' + '日一二三四五六'[d.getDay()];
 }
 
+// ==================== 修改81：修改日志时间线（桌面卡片与手机区块共用渲染） ====================
+const LOG_ACTION_META = {
+  create: { label: '发起点名', cls: 'tag-blue' },
+  update: { label: '修改', cls: 'tag-orange' },
+  system: { label: '假单自动校正', cls: 'tag-gray' },
+  confirm: { label: '任课老师确认', cls: 'tag-green' },
+};
+const LOG_FIELD_LABELS = { status: '考勤状态', note: '备注', confirmStatus: '任课老师确认' };
+
+/** 操作人展示：姓名 + 账号 + 角色（账号是否脱敏由服务端按查看角色决定，前端原样渲染） */
+function logActorHtml(l) {
+  const op = l.operator || {};
+  const acc = op.username ? `<span class="lg-acc">${esc(op.username)}</span>` : '';
+  const roleTx = (op.roles || []).map((r) => ROLE_NAMES[r]).filter(Boolean).join(' / ');
+  const extra = [roleTx, l.via].filter(Boolean).map((x) => `<span class="lg-role">${esc(x)}</span>`).join('');
+  return `<b class="lg-name">${esc(op.name || '—')}</b>${acc}${extra}`;
+}
+
+/** 单条字段变更：学生（学号）+ 字段名 + 前值 → 后值；状态值按四态语义色显示 */
+function logChangeHtml(c) {
+  const label = LOG_FIELD_LABELS[c.field] || c.field;
+  const fmt = (v) => (v === '' || v == null ? '<i class="lg-none">（空）</i>' : esc(v));
+  const stu = `${esc(c.name || '')}${c.studentId ? `<i class="lg-sid">${esc(c.studentId)}</i>` : ''}`;
+  if (c.field === 'status') {
+    return `<div class="lg-chg"><span class="lg-stu">${stu}</span><span class="lg-field">${esc(label)}</span><span class="lg-val lg-st-${STATUS_CLS[c.before] || 'gray'}">${fmt(c.before)}</span><span class="lg-arrow">→</span><span class="lg-val lg-st-${STATUS_CLS[c.after] || 'gray'}">${fmt(c.after)}</span></div>`;
+  }
+  return `<div class="lg-chg"><span class="lg-stu">${stu}</span><span class="lg-field">${esc(label)}</span><span class="lg-val lg-plain">${fmt(c.before)}</span><span class="lg-arrow">→</span><span class="lg-val lg-plain">${fmt(c.after)}</span></div>`;
+}
+
+/** 时间线整体渲染（服务端已按时间倒序返回；空态兼容存量记录未生成日志的情况） */
+function renderLogHtml(logs) {
+  if (!logs || !logs.length) return '<div class="lg-empty">暂无修改记录</div>';
+  return logs
+    .map((l) => {
+      const meta = LOG_ACTION_META[l.action] || { label: l.action || '记录', cls: 'tag-gray' };
+      let body;
+      if (l.action === 'create') {
+        const sum = l.summary || {};
+        body = `<div class="lg-chg lg-summary">共 <b>${sum.total ?? '—'}</b> 人${sum.counts ? ` · ${countMini(sum.counts)}` : ''}</div>`;
+      } else {
+        const changes = l.changes || [];
+        body = changes.length
+          ? `<div class="lg-changes">${changes.map(logChangeHtml).join('')}</div>`
+          : '<div class="lg-chg muted">无字段级变更明细</div>';
+      }
+      return `<div class="lg-item lg-${esc(l.action)}">
+        <span class="lg-dot" aria-hidden="true"></span>
+        <div class="lg-body">
+          <div class="lg-head">${logActorHtml(l)}<span class="tag ${meta.cls}">${esc(meta.label)}</span><span class="lg-time">${fmtTime(l.at)}</span></div>
+          ${body}
+        </div>
+      </div>`;
+    })
+    .join('');
+}
+
+/** 拉取并填充页面内全部日志容器（桌面 / 手机双份；失败静默降级为空态） */
+async function loadAttendanceLogs(root, sessionId) {
+  const boxes = root.querySelectorAll('[data-log-timeline]');
+  if (!boxes.length) return;
+  const fill = (html) => boxes.forEach((el) => (el.innerHTML = html));
+  try {
+    const { logs } = await api(`/api/attendance/${sessionId}/logs`);
+    fill(renderLogHtml(logs));
+  } catch {
+    fill('<div class="lg-empty">修改记录加载失败</div>');
+  }
+}
+
 export const RollcallDetailView = {
   async mount(root, params) {
     const user = getUser();
@@ -858,6 +927,13 @@ export const RollcallDetailView = {
           </table>
         </div>
       </div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <div class="card-title" style="margin-bottom:4px">修改日志</div>
+          <span class="small muted">按时间倒序记录本条考勤的全部变更轨迹</span>
+        </div>
+        <div class="lg-timeline" data-log-timeline><div class="lg-empty">加载中…</div></div>
+      </div>
       </div>
 
       <!-- 修改49：手机层（≤720px；设计图：上=概览区 hero/课程信息/四列统计/任课老师确认，下=学生考勤名单） -->
@@ -917,6 +993,8 @@ export const RollcallDetailView = {
         <div class="rd-tabs" id="mRdTabs">
           <button type="button" class="rd-tab on" data-jump="list">学生考勤（<span id="mRdCount">0</span>）</button>
           <button type="button" class="rd-tab" data-jump="stats">统计概览</button>
+          <!-- 修改81：新增「修改日志」锚点 tab -->
+          <button type="button" class="rd-tab" data-jump="logs">修改日志</button>
         </div>
 
         <div class="rd-tools">
@@ -928,6 +1006,12 @@ export const RollcallDetailView = {
         </div>
 
         <div class="rd-list" id="mRdList"></div>
+
+        <!-- 修改81：修改日志时间线（手机区块，锚点 tab「修改日志」跳转至此） -->
+        <section class="card rd-logs" id="mRdLogs">
+          <div class="card-title" style="margin-bottom:6px">修改日志</div>
+          <div class="lg-timeline" data-log-timeline><div class="lg-empty">加载中…</div></div>
+        </section>
       </div>
 
       ${
@@ -948,6 +1032,9 @@ export const RollcallDetailView = {
     </div>`;
 
     root.querySelector('#btnBack').onclick = () => (location.hash = '#/rollcall');
+
+    // 修改81：修改日志时间线（异步拉取，失败降级空态；桌面 / 手机容器同步填充）
+    loadAttendanceLogs(root, s.id);
 
     // 修改49：保存逻辑桌面/手机共用同一函数（行为等价）
     const doSave = async (btn) => {
@@ -1016,13 +1103,15 @@ export const RollcallDetailView = {
         if (item) item.note = input.value;
       });
     }
-    // 概览/名单 锚点切换（同一页面上下两段，设计图右侧 tab 栏）
+    // 概览/名单/修改日志 锚点切换（同一页面上下分段，设计图右侧 tab 栏）
     const mTabs = root.querySelector('#mRdTabs');
     if (mTabs) {
       mTabs.addEventListener('click', (e) => {
         const btn = e.target.closest('.rd-tab');
         if (!btn) return;
-        const target = btn.dataset.jump === 'stats' ? root.querySelector('#mRdStats') : mList;
+        // 修改81：锚点映射扩展（stats → 概览 / logs → 修改日志），其余默认名单
+        const jumpMap = { stats: '#mRdStats', logs: '#mRdLogs' };
+        const target = jumpMap[btn.dataset.jump] ? root.querySelector(jumpMap[btn.dataset.jump]) : mList;
         if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }

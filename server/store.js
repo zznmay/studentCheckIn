@@ -5,7 +5,8 @@ const path = require('path');
 const { uid, nowISO, hashPassword, PERIODS } = require('./utils');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const COLLECTIONS = ['users', 'students', 'attendance', 'leaves', 'tokens', 'appeals', 'punishments'];
+// 修改81：attendanceLogs（考勤修改日志）为后增集合，随通用 load/save 生效
+const COLLECTIONS = ['users', 'students', 'attendance', 'leaves', 'tokens', 'appeals', 'punishments', 'attendanceLogs'];
 const db = {};
 
 // 登录态签名密钥：持久化于 data/secret.key。无状态签名 token 依赖它；
