@@ -48,6 +48,39 @@ function fmtSize(n) {
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
+/* 修改79：大数据包分片上传。
+   背景——部署平台网关对「单条连接累计上行约 1MB」就会掐断 TLS 连接（实测同连接连发 512KB
+   分片第 1 片即断、换新连接又能传，curl 表现 bad record mac），表现为「网络异常」。
+   对策：①单片压到 256KB；②每片失败自动重试——连接被掐后浏览器会丢弃旧连接，重试即换新
+   连接、累计清零；③超过阈值的包先切片上传，拿到 uploadId 后预检 / 恢复只传几十字节。 */
+const UPLOAD_DIRECT_LIMIT = 900 * 1024; // 内联上传的安全阈值（UTF-8 字节）
+const UPLOAD_CHUNK_BYTES = 256 * 1024; // 单片上限（远低于网关掐断点）
+const UPLOAD_RETRY = 4; // 每片最多尝试次数（首传 + 3 次重试）
+
+/** 按 UTF-8 字节数切分字符串：二分逼近边界，保证每片 ≤ maxBytes。
+    快速路径用 maxBytes/3 字符兜底（UTF-8 每字符最多 3 字节的场景也不会超限）。 */
+function splitChunks(text, maxBytes) {
+  const enc = new TextEncoder();
+  const out = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = text.length;
+    if (end - start > Math.floor(maxBytes / 3)) {
+      let low = start + 1;
+      let high = start + maxBytes;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        if (enc.encode(text.slice(start, mid)).length <= maxBytes) low = mid;
+        else high = mid - 1;
+      }
+      end = low;
+    }
+    out.push(text.slice(start, end));
+    start = end;
+  }
+  return out;
+}
+
 export default {
   async mount(root) {
     // 样式注入 document.head（幂等）：下方 root.innerHTML 赋值会清空 root 内已有节点，样式不能挂在 root 里
@@ -87,6 +120,36 @@ export default {
       renderBody();
     };
 
+    // ---------- 修改79：把数据包送上线可用载荷 ----------
+    // 小包仍按原样内联传输；大包切片上传，返回轻量 uploadId 供后续预检 / 恢复引用。
+    // 每片带自动重试：网关掐的是「连接累计上行」，连接挂掉后重试会换新连接，累计清零。
+    async function postChunkWithRetry(body, attempts = UPLOAD_RETRY) {
+      let lastErr;
+      for (let i = 0; i < attempts; i += 1) {
+        try {
+          return await api('/api/data/restore/upload', { method: 'POST', body });
+        } catch (e) {
+          lastErr = e;
+          if (e.status) throw e; // 业务错误（400/401/413 等）重试无意义，直接抛
+          await new Promise((r) => setTimeout(r, 200 * (i + 1))); // 网络层失败：退避后换连接重试
+        }
+      }
+      throw lastErr;
+    }
+
+    async function uploadBundle(bundle, onProgress) {
+      const text = JSON.stringify(bundle);
+      const bytes = new TextEncoder().encode(text).length;
+      if (bytes <= UPLOAD_DIRECT_LIMIT) return { bundle };
+      const chunks = splitChunks(text, UPLOAD_CHUNK_BYTES);
+      const uploadId = `up-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      for (let i = 0; i < chunks.length; i += 1) {
+        await postChunkWithRetry({ uploadId, index: i, total: chunks.length, chunk: chunks[i] });
+        onProgress && onProgress(i + 1, chunks.length, bytes);
+      }
+      return { uploadId };
+    }
+
     // ---------- 通用：恢复预检 + 确认弹窗 ----------
     function restoreModal(bundleOrId, onDone) {
       const hasObj = typeof bundleOrId === 'object';
@@ -94,12 +157,18 @@ export default {
         title: '恢复数据 — 预检',
         width: 640,
         showFooter: false,
-        body: `<div id="rvBody"><div class="muted small">正在校验数据包…</div></div>`,
+        body: `<div id="rvBody"><div class="muted small">${hasObj ? '正在上传数据包…' : '正在校验数据包…'}</div></div>`,
         onMount(wrap, close) {
+          const box = wrap.querySelector('#rvBody');
           (async () => {
-            const r = await api('/api/data/restore/preview', { method: 'POST', body: hasObj ? { bundle: bundleOrId } : { id: bundleOrId } });
+            const payload = hasObj
+              ? await uploadBundle(bundleOrId, (done, total, bytes) => {
+                  box.innerHTML = `<div class="muted small">正在上传数据包 ${done}/${total}（共 ${fmtSize(bytes)}）…</div>`;
+                })
+              : { id: bundleOrId };
+            box.innerHTML = `<div class="muted small">正在校验数据包…</div>`;
+            const r = await api('/api/data/restore/preview', { method: 'POST', body: payload });
             const m = r.bundleMeta || {};
-            const box = wrap.querySelector('#rvBody');
             if (!r.ok) {
               box.innerHTML = `
                 <div class="dm-banner warn">✗ 数据包校验未通过，已拒绝恢复</div>
@@ -124,7 +193,7 @@ export default {
               const phrase = box.querySelector('#rvConfirm').value.trim();
               if (phrase !== '恢复') return toast('请输入确认短语「恢复」', 'error');
               try {
-                const rr = await api('/api/data/restore', { method: 'POST', body: hasObj ? { bundle: bundleOrId, confirm: phrase } : { id: bundleOrId, confirm: phrase } });
+                const rr = await api('/api/data/restore', { method: 'POST', body: { ...payload, confirm: phrase } });
                 close();
                 modal({
                   title: '恢复完成', width: 440, showFooter: false,
@@ -144,7 +213,11 @@ export default {
               }
             };
           })().catch((e) => {
-            wrap.querySelector('#rvBody').innerHTML = `<div class="dm-banner warn">✗ ${esc(e.message)}</div>`;
+            // 修改79：区分「上传被网关掐断」与「服务未启动」，避免误导排障
+            const hint = e.message.startsWith('网络异常')
+              ? '<div class="dm-note" style="margin-top:10px">分片上传已自动重试（每次重试会更换新连接）仍失败。请检查网络后重试；若持续失败，请按 F12 打开控制台查看具体报错并反馈，或先在原环境使用「生成迁移包」压缩数据（或清除历史签名附件）再导入。</div>'
+              : '';
+            wrap.querySelector('#rvBody').innerHTML = `<div class="dm-banner warn">✗ ${esc(e.message)}</div>${hint}`;
           });
         },
       });

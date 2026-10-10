@@ -22,7 +22,9 @@ export async function api(path, opts = {}) {
   let res;
   try {
     res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
-  } catch {
+  } catch (e) {
+    // 修改79：保留底层原因到控制台（部署网关掐「单连接累计上行」时表现为 fetch 抛异常，肉眼只见这句话）
+    console.error(`[api] ${method} ${path} 网络层失败:`, e);
     throw new Error('网络异常，请确认服务已启动后刷新页面');
   }
   let data = {};

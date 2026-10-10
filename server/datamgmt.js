@@ -14,6 +14,8 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups'); // 服务端快照（自动保留 30 份）
 const ARCHIVE_DIR = path.join(DATA_DIR, 'archives'); // 灰测归档（只增不删）
 const AUTO_DIR = path.join(DATA_DIR, 'auto-backups'); // 定时自动备份（保留 N 份）
+// 修改79：分片上传暂存区（大数据包专用，见 /api/data/restore/upload）
+const UPLOAD_DIR = path.join(DATA_DIR, 'tmp-uploads');
 const OPLOG_FILE = path.join(DATA_DIR, 'oplog.json');
 const SCHEMA_VERSION = 1;
 const APP_VERSION = '2.1';
@@ -27,7 +29,7 @@ const ALL_KEYS = [...ARRAY_KEYS, 'settings'];
 // 修改72：classes 同理（历史灾备包不含此键时恢复为空数组，不阻断导入）
 const LENIENT_KEYS = ['appeals', 'punishments', 'classes'];
 
-for (const d of [BACKUP_DIR, ARCHIVE_DIR, AUTO_DIR]) fs.mkdirSync(d, { recursive: true });
+for (const d of [BACKUP_DIR, ARCHIVE_DIR, AUTO_DIR, UPLOAD_DIR]) fs.mkdirSync(d, { recursive: true });
 
 // ---------- 基础工具 ----------
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -136,6 +138,46 @@ function findBundle(id) {
     if (fs.existsSync(f)) return { file: f, dir };
   }
   return null;
+}
+
+// ---------- 修改79：数据包分片上传暂存 ----------
+// 背景：部署平台网关对单次请求体约 ≥2MB 的 POST 会直接掐断 TLS 连接（curl 表现为
+// sslv3 alert bad record mac / connection reset），整体上传的数据包永远到不了业务层。
+// 对策：前端先切片、逐片上传（单片 ≤512KB），服务端拼装成完整 JSON 后以 uploadId 索引，
+// 后续预检 / 恢复只传 uploadId（几十字节），彻底绕开请求体上限。
+const UPLOAD_MAX_TOTAL = 256 * 1024 * 1024; // 单个数据包拼装后上限（字节）
+const UPLOAD_TTL_MS = 2 * 60 * 60 * 1000; // 分片与成品保留时长：2 小时
+const UPLOAD_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
+
+function safeUploadId(id) {
+  const s = String(id == null ? '' : id);
+  return UPLOAD_ID_RE.test(s) ? s : '';
+}
+
+function findUpload(id) {
+  const safe = safeUploadId(id);
+  if (!safe) return null;
+  const f = path.join(UPLOAD_DIR, `${safe}.json`);
+  return fs.existsSync(f) ? f : null;
+}
+
+function purgeStaleUploads() {
+  if (!fs.existsSync(UPLOAD_DIR)) return;
+  const now = Date.now();
+  for (const name of fs.readdirSync(UPLOAD_DIR)) {
+    let st;
+    try {
+      st = fs.statSync(path.join(UPLOAD_DIR, name));
+    } catch {
+      continue; // 文件恰被其他进程清理
+    }
+    if (now - st.mtimeMs < UPLOAD_TTL_MS) continue;
+    try {
+      fs.rmSync(path.join(UPLOAD_DIR, name), { recursive: true, force: true });
+    } catch {
+      /* 清理失败不影响主流程 */
+    }
+  }
 }
 
 function pruneBackups() {
@@ -312,15 +354,85 @@ function register({ route, fail }) {
     res.end(body);
   });
 
-  // 恢复预检：校验数据包 + 与当前数据条数对比（不落盘）
-  route('POST', '/api/data/restore/preview', admin, async ({ res, body }) => {
-    let bundle = body.bundle;
-    if (!bundle && body.id) {
+  // 修改79：分片上传数据包（大包专用通道；单片上限由前端控制在 512KB 以内）
+  route('POST', '/api/data/restore/upload', admin, async ({ res, body }) => {
+    purgeStaleUploads();
+    const uploadId = safeUploadId(body.uploadId);
+    if (!uploadId) fail(400, 'uploadId 不合法');
+    const total = Number(body.total);
+    const index = Number(body.index);
+    if (!Number.isInteger(total) || total < 1 || total > 4000) fail(400, '分片总数不合法');
+    if (!Number.isInteger(index) || index < 0 || index >= total) fail(400, '分片序号不合法');
+    const chunk = body.chunk;
+    if (typeof chunk !== 'string' || !chunk) fail(400, '分片内容为空');
+    const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+    if (chunkBytes > 2 * 1024 * 1024) fail(413, '单片体积过大，请缩小分片后重试');
+
+    const dir = path.join(UPLOAD_DIR, uploadId);
+    fs.mkdirSync(dir, { recursive: true });
+    let sum = 0;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.part')) continue;
+      try {
+        sum += fs.statSync(path.join(dir, f)).size;
+      } catch {
+        /* 忽略并发清理 */
+      }
+    }
+    if (sum + chunkBytes > UPLOAD_MAX_TOTAL) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* 清理失败忽略 */
+      }
+      fail(413, `数据包超过 ${Math.round(UPLOAD_MAX_TOTAL / 1024 / 1024)}MB 上限，已终止本次上传`);
+    }
+    fs.writeFileSync(path.join(dir, `${String(index).padStart(6, '0')}.part`), chunk, 'utf8');
+
+    const parts = fs.readdirSync(dir).filter((f) => f.endsWith('.part')).sort();
+    if (parts.length < total) return json(res, 200, { ok: true, done: false, received: parts.length, total });
+
+    // 全部到齐：按序号拼接 → 解析校验 → 落成品，前端随后用 uploadId 走预检 / 恢复
+    const text = parts.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('');
+    let bundle;
+    try {
+      bundle = JSON.parse(text);
+    } catch (e) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* 清理失败忽略 */
+      }
+      fail(400, `数据包拼接后无法解析（${e.message}），请重新导出后重试`);
+    }
+    fs.writeFileSync(path.join(UPLOAD_DIR, `${uploadId}.json`), JSON.stringify(bundle), 'utf8');
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* 清理失败忽略 */
+    }
+    json(res, 200, { ok: true, done: true, bytes: Buffer.byteLength(text, 'utf8') });
+  });
+
+  // 修改79：预检与恢复统一入口 —— bundle（内联小包）/ id（服务端已有包）/ uploadId（分片上传）
+  function resolveBundle(body) {
+    if (body.bundle && typeof body.bundle === 'object') return body.bundle;
+    if (body.id) {
       const hit = findBundle(String(body.id));
       if (!hit) fail(404, '数据包不存在或已被清理');
-      bundle = JSON.parse(fs.readFileSync(hit.file, 'utf8'));
+      return JSON.parse(fs.readFileSync(hit.file, 'utf8'));
     }
-    if (!bundle) fail(400, '缺少数据包（id 或 bundle）');
+    if (body.uploadId) {
+      const f = findUpload(body.uploadId);
+      if (!f) fail(404, '上传的数据包不存在或已过期（超过 2 小时），请重新选择文件');
+      return JSON.parse(fs.readFileSync(f, 'utf8'));
+    }
+    fail(400, '缺少数据包（bundle / id / uploadId）');
+  }
+
+  // 恢复预检：校验数据包 + 与当前数据条数对比（不落盘）
+  route('POST', '/api/data/restore/preview', admin, async ({ res, body }) => {
+    const bundle = resolveBundle(body);
     const { ok, checks } = verifyBundle(bundle);
     const diff = ALL_KEYS.map((k) => {
       const cur = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 : 0;
@@ -333,18 +445,19 @@ function register({ route, fail }) {
   // 恢复：需确认短语；恢复前自动做 pre-restore 快照（可回滚）
   route('POST', '/api/data/restore', admin, async ({ res, user, body }) => {
     if (String(body.confirm || '').trim() !== '恢复') fail(400, '请输入确认短语「恢复」以执行该操作');
-    let bundle = body.bundle;
-    if (!bundle && body.id) {
-      const hit = findBundle(String(body.id));
-      if (!hit) fail(404, '数据包不存在或已被清理');
-      bundle = JSON.parse(fs.readFileSync(hit.file, 'utf8'));
-    }
-    if (!bundle) fail(400, '缺少数据包（id 或 bundle）');
+    const bundle = resolveBundle(body);
     const { ok, checks } = verifyBundle(bundle);
     if (!ok) fail(400, `数据包校验未通过：${checks.filter((c) => !c.ok).map((c) => `${c.key}(${c.message})`).join('；')}`);
     const pre = saveBundle(makeBundle('backup', '恢复前自动快照', 'workbuddy-sites'), BACKUP_DIR);
     pruneBackups();
     applyBundle(bundle);
+    // 修改79：恢复成功后释放分片上传的临时成品（可按 uploadId 重传，无需保留）
+    try {
+      const f = findUpload(body.uploadId);
+      if (f) fs.unlinkSync(f);
+    } catch {
+      /* 清理失败不影响恢复结果 */
+    }
     oplog(user, '恢复数据', `来源包 ${bundle.kind}:${bundle.exportedAt}；恢复前快照 ${pre.id}`);
     json(res, 200, { ok: true, preSnapshot: pre.id, counts: bundle.counts });
   });
