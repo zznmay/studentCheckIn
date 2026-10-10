@@ -152,22 +152,56 @@ export default {
       return { uploadId };
     }
 
+    // ---------- 修改80：zip 数据包分片上传（二进制 → base64 切片） ----------
+    // 192KB 二进制 → base64 恰为 256KB 字符串，与修改79 实测安全的单片上行尺寸精确对齐
+    const BINARY_CHUNK_BYTES = 192 * 1024;
+
+    /** Uint8Array → base64（按 0x8000 子段转换，避免大数组 apply 参数栈溢出） */
+    function bytesToBase64(bytes) {
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      return btoa(bin);
+    }
+
+    /** 整包 sha256（服务端据此对账，任何静默损坏都会在齐片后被拒） */
+    async function sha256Hex(bytes) {
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function uploadZipBytes(bytes, onProgress) {
+      const fileSha256 = await sha256Hex(bytes);
+      const total = Math.max(1, Math.ceil(bytes.length / BINARY_CHUNK_BYTES));
+      const uploadId = `up-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      for (let i = 0; i < total; i += 1) {
+        const slice = bytes.subarray(i * BINARY_CHUNK_BYTES, Math.min(bytes.length, (i + 1) * BINARY_CHUNK_BYTES));
+        await postChunkWithRetry({ uploadId, index: i, total, format: 'zip', fileSha256, chunk: bytesToBase64(slice) });
+        onProgress && onProgress(i + 1, total, bytes.length);
+      }
+      return { uploadId };
+    }
+
     // ---------- 通用：恢复预检 + 确认弹窗 ----------
-    function restoreModal(bundleOrId, onDone) {
-      const hasObj = typeof bundleOrId === 'object';
+    // source: {kind:'id', id} 服务端已有包 | {kind:'bundle', bundle} 内联/JSON 分片 | {kind:'bytes', bytes} zip 分片
+    function restoreModal(source, onDone) {
+      const needUpload = source.kind !== 'id';
       modal({
         title: '恢复数据 — 预检',
         width: 640,
         showFooter: false,
-        body: `<div id="rvBody"><div class="muted small">${hasObj ? '正在上传数据包…' : '正在校验数据包…'}</div></div>`,
+        body: `<div id="rvBody"><div class="muted small">${needUpload ? '正在上传数据包…' : '正在校验数据包…'}</div></div>`,
         onMount(wrap, close) {
           const box = wrap.querySelector('#rvBody');
+          const progress = (done, total, bytes) => {
+            box.innerHTML = `<div class="muted small">正在上传数据包 ${done}/${total}（共 ${fmtSize(bytes)}）…</div>`;
+          };
           (async () => {
-            const payload = hasObj
-              ? await uploadBundle(bundleOrId, (done, total, bytes) => {
-                  box.innerHTML = `<div class="muted small">正在上传数据包 ${done}/${total}（共 ${fmtSize(bytes)}）…</div>`;
-                })
-              : { id: bundleOrId };
+            let payload;
+            if (source.kind === 'id') payload = { id: source.id };
+            else if (source.kind === 'bytes') payload = await uploadZipBytes(source.bytes, progress);
+            else payload = await uploadBundle(source.bundle, progress);
             box.innerHTML = `<div class="muted small">正在校验数据包…</div>`;
             const r = await api('/api/data/restore/preview', { method: 'POST', body: payload });
             const m = r.bundleMeta || {};
@@ -304,7 +338,7 @@ export default {
         <div class="card">
           <div class="card-title">恢复数据</div>
           <div class="dm-actions">
-            <label class="btn btn-sm file-pick">${ICONS.upload} 上传数据包文件预检并恢复<input type="file" accept=".json" hidden id="bkFile" /></label>
+            <label class="btn btn-sm file-pick">${ICONS.upload} 上传数据包文件预检并恢复<input type="file" accept=".zip,.json" hidden id="bkFile" /></label>
             <span class="dm-note">或点击下方列表中的「恢复」。所有恢复均先校验 sha256 清单，并自动快照当前数据。</span>
           </div>
         </div>
@@ -375,8 +409,14 @@ export default {
         e.target.value = '';
         if (!file) return;
         try {
-          const bundle = JSON.parse(await file.text());
-          restoreModal(bundle, renderBody);
+          // 修改80：按文件头魔数分流（PK\x03\x04 = zip 备份包；其余按 v1 JSON 包处理）
+          const buf = new Uint8Array(await file.arrayBuffer());
+          if (buf.length >= 2 && buf[0] === 0x50 && buf[1] === 0x4b) {
+            restoreModal({ kind: 'bytes', bytes: buf }, renderBody);
+            return;
+          }
+          const bundle = JSON.parse(new TextDecoder().decode(buf));
+          restoreModal({ kind: 'bundle', bundle }, renderBody);
         } catch (err) {
           toast(`文件解析失败：${err.message}`, 'error');
         }
@@ -385,7 +425,7 @@ export default {
         b.onclick = () => apiDownload(`/api/data/bundles/${encodeURIComponent(b.dataset.id)}/download`, b.dataset.file || `${b.dataset.id}.zip`).catch((err) => toast(err.message, 'error'));
       });
       bodyEl.querySelectorAll('[data-act="rs"]').forEach((b) => {
-        b.onclick = () => restoreModal(b.dataset.id, renderBody);
+        b.onclick = () => restoreModal({ kind: 'id', id: b.dataset.id }, renderBody);
       });
     }
 

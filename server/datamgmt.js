@@ -56,34 +56,35 @@ function oplog(user, action, detail) {
 }
 
 // ---------- 数据包（Bundle） ----------
-/** 扫描集合里被引用的附件 sha256（修改80）：只收实际被引用的，不打包 data/attachments 全目录 */
+/** 扫描集合里被引用的附件（修改80）：只收「引用形态且文件确实存在」的 sha256。
+ *  ① 内嵌 base64 不进清单 —— 它自包含在 collections 里，导入时由 externalizeCollections 自动转换；
+ *     （曾用 dataUri 字符串算 sha 的兜底分支是错的：落盘文件按解码后字节算哈希，对不上）
+ *  ② 引用了但文件缺失的记入 missing 并从清单剔除，保证「清单 == zip 内实际内容」，备份包始终可导入。 */
 function collectAttachmentRefs(collections) {
-  const refs = new Map(); // sha256 -> {sha256, mime, size}
-  const add = (ref) => {
-    if (!ref || !/^[0-9a-f]{64}$/.test(String(ref.sha256 || ''))) return;
-    const sha = String(ref.sha256);
-    if (refs.has(sha)) return;
-    let size = Number(ref.size);
-    if (!Number.isFinite(size)) {
+  const refs = new Map();
+  const missing = new Set();
+  const add = (sha, mime, size) => {
+    sha = String(sha || '');
+    if (!/^[0-9a-f]{64}$/.test(sha) || refs.has(sha)) return;
+    if (!attachments.has(sha)) {
+      missing.add(sha);
+      return;
+    }
+    let sz = Number(size);
+    if (!Number.isFinite(sz) || sz <= 0) {
       try {
-        size = fs.statSync(attachments.fileOf(sha)).size;
+        sz = fs.statSync(attachments.fileOf(sha)).size;
       } catch {
-        size = 0;
+        sz = 0;
       }
     }
-    refs.set(sha, { sha256: sha, mime: String(ref.mime || 'image/png'), size });
+    refs.set(sha, { sha256: sha, mime: String(mime || 'image/png'), size: sz });
   };
-  for (const s of collections.attendance || []) {
-    if (s && s.signatureRef) add(s.signatureRef);
-    if (s && typeof s.signature === 'string' && s.signature.startsWith('data:')) add({ sha256: sha256(s.signature) });
-  }
+  for (const s of collections.attendance || []) if (s && s.signatureRef) add(s.signatureRef.sha256, s.signatureRef.mime, s.signatureRef.size);
   for (const a of collections.appeals || []) {
-    for (const x of (a && a.attachments) || []) {
-      if (x && x.sha256) add(x);
-      else if (x && typeof x.dataUrl === 'string' && x.dataUrl.startsWith('data:')) add({ sha256: sha256(x.dataUrl) });
-    }
+    for (const x of (a && a.attachments) || []) if (x && x.sha256) add(x.sha256, x.mime, x.size);
   }
-  return Object.fromEntries(refs);
+  return { refs: Object.fromEntries(refs), missing: [...missing] };
 }
 
 function makeBundle(kind, label, source) {
@@ -92,6 +93,7 @@ function makeBundle(kind, label, source) {
   collections.settings = clone(store.db.settings || {});
   const manifest = {};
   for (const k of ALL_KEYS) manifest[k] = { count: Array.isArray(collections[k]) ? collections[k].length : 1, sha256: sha256(JSON.stringify(collections[k])) };
+  const att = collectAttachmentRefs(collections);
   return {
     kind: kind || 'backup',
     label: label || '',
@@ -102,7 +104,8 @@ function makeBundle(kind, label, source) {
     counts: Object.fromEntries(ALL_KEYS.map((k) => [k, manifest[k].count])),
     collections,
     manifest,
-    attachments: collectAttachmentRefs(collections), // 修改80：附件清单（sha256 → {size, mime}）
+    attachments: att.refs, // 修改80：附件清单（sha256 → {size, mime}）
+    attachmentsMissing: att.missing.length ? att.missing : undefined, // 引用了但文件已丢失（导出时告警）
   };
 }
 
@@ -255,11 +258,28 @@ function safeUploadId(id) {
   return UPLOAD_ID_RE.test(s) ? s : '';
 }
 
+/** 修改80：返回暂存描述 —— json 模式 {kind:'json', file}；zip 模式 {kind:'zip', bundleFile, attDir} */
 function findUpload(id) {
   const safe = safeUploadId(id);
   if (!safe) return null;
-  const f = path.join(UPLOAD_DIR, `${safe}.json`);
-  return fs.existsSync(f) ? f : null;
+  const jsonFile = path.join(UPLOAD_DIR, `${safe}.json`);
+  if (fs.existsSync(jsonFile)) return { kind: 'json', file: jsonFile };
+  const bundleFile = path.join(UPLOAD_DIR, safe, 'bundle.json');
+  if (fs.existsSync(bundleFile)) return { kind: 'zip', bundleFile, attDir: path.join(UPLOAD_DIR, safe, 'attachments') };
+  return null;
+}
+
+/** 修改80：按暂存描述读出 { bundle, attMap }（zip 模式把附件目录读成 Map） */
+function loadUpload(hit) {
+  if (hit.kind === 'zip') {
+    const bundle = JSON.parse(fs.readFileSync(hit.bundleFile, 'utf8'));
+    const attMap = new Map();
+    if (fs.existsSync(hit.attDir)) {
+      for (const f of fs.readdirSync(hit.attDir)) attMap.set(f, fs.readFileSync(path.join(hit.attDir, f)));
+    }
+    return { bundle, attMap };
+  }
+  return { bundle: JSON.parse(fs.readFileSync(hit.file, 'utf8')), attMap: null };
 }
 
 function purgeStaleUploads() {
@@ -470,6 +490,8 @@ const count = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 
   });
 
   // 修改79：分片上传数据包（大包专用通道；单片上限由前端控制在 512KB 以内）
+  // 修改80：新增 format:'zip' 二进制模式 —— chunk 为二进制切片的 base64，齐片后校验整体
+  // sha256 → zipRead 解包 → 暂存 bundle.json + attachments/ 目录；缺省 format 走原文本 JSON 路径。
   route('POST', '/api/data/restore/upload', admin, async ({ res, body }) => {
     purgeStaleUploads();
     const uploadId = safeUploadId(body.uploadId);
@@ -480,11 +502,26 @@ const count = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 
     if (!Number.isInteger(index) || index < 0 || index >= total) fail(400, '分片序号不合法');
     const chunk = body.chunk;
     if (typeof chunk !== 'string' || !chunk) fail(400, '分片内容为空');
+    const isZip = body.format === 'zip';
+    // zip 模式：base64 字符串长度上限约等于解码后体积的 4/3，留一倍余量
     const chunkBytes = Buffer.byteLength(chunk, 'utf8');
-    if (chunkBytes > 2 * 1024 * 1024) fail(413, '单片体积过大，请缩小分片后重试');
+    if (isZip ? chunkBytes > 3 * 1024 * 1024 : chunkBytes > 2 * 1024 * 1024) fail(413, '单片体积过大，请缩小分片后重试');
 
     const dir = path.join(UPLOAD_DIR, uploadId);
     fs.mkdirSync(dir, { recursive: true });
+    const cleanupDir = () => {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* 清理失败忽略 */
+      }
+    };
+    let payload = null;
+    if (isZip) {
+      // base64 → 二进制；宽松解码（Buffer 容忍空白），非空即接受（整体 sha256 在齐片后把关）
+      payload = Buffer.from(chunk, 'base64');
+      if (!payload.length) fail(400, '分片 base64 解码为空，请重新上传');
+    }
     let sum = 0;
     for (const f of fs.readdirSync(dir)) {
       if (!f.endsWith('.part')) continue;
@@ -494,39 +531,63 @@ const count = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 
         /* 忽略并发清理 */
       }
     }
-    if (sum + chunkBytes > UPLOAD_MAX_TOTAL) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* 清理失败忽略 */
-      }
+    if (sum + (payload ? payload.length : chunkBytes) > UPLOAD_MAX_TOTAL) {
+      cleanupDir();
       fail(413, `数据包超过 ${Math.round(UPLOAD_MAX_TOTAL / 1024 / 1024)}MB 上限，已终止本次上传`);
     }
-    fs.writeFileSync(path.join(dir, `${String(index).padStart(6, '0')}.part`), chunk, 'utf8');
+    if (payload) fs.writeFileSync(path.join(dir, `${String(index).padStart(6, '0')}.part`), payload);
+    else fs.writeFileSync(path.join(dir, `${String(index).padStart(6, '0')}.part`), chunk, 'utf8');
 
     const parts = fs.readdirSync(dir).filter((f) => f.endsWith('.part')).sort();
     if (parts.length < total) return json(res, 200, { ok: true, done: false, received: parts.length, total });
 
-    // 全部到齐：按序号拼接 → 解析校验 → 落成品，前端随后用 uploadId 走预检 / 恢复
-    const text = parts.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('');
+    if (!isZip) {
+      // 全部到齐：按序号拼接 → 解析校验 → 落成品，前端随后用 uploadId 走预检 / 恢复
+      const text = parts.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('');
+      let bundle;
+      try {
+        bundle = JSON.parse(text);
+      } catch (e) {
+        cleanupDir();
+        fail(400, `数据包拼接后无法解析（${e.message}），请重新导出后重试`);
+      }
+      fs.writeFileSync(path.join(UPLOAD_DIR, `${uploadId}.json`), JSON.stringify(bundle), 'utf8');
+      cleanupDir();
+      return json(res, 200, { ok: true, done: true, bytes: Buffer.byteLength(text, 'utf8') });
+    }
+
+    // zip 模式：拼 Buffer → 整体 sha256 对账 → 解包暂存
+    const zipBuf = Buffer.concat(parts.map((f) => fs.readFileSync(path.join(dir, f))));
+    const declared = String(body.fileSha256 || '');
+    if (!/^[0-9a-f]{64}$/.test(declared)) {
+      cleanupDir();
+      fail(400, '缺少 fileSha256（整包 sha256），无法校验上传完整性');
+    }
+    if (attachments.sha256Buf(zipBuf) !== declared) {
+      cleanupDir();
+      fail(400, '数据包校验失败（整包 sha256 与声明不符，可能上传过程中损坏），请重新上传');
+    }
+    let entries;
     let bundle;
     try {
-      bundle = JSON.parse(text);
+      entries = zipRead(zipBuf);
+      bundle = JSON.parse(entries['bundle.json'].toString('utf8'));
     } catch (e) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* 清理失败忽略 */
-      }
-      fail(400, `数据包拼接后无法解析（${e.message}），请重新导出后重试`);
+      cleanupDir();
+      fail(400, `数据包不是有效的备份 zip（${e.message}），请确认导出的是修改80+ 生成的迁移包`);
     }
-    fs.writeFileSync(path.join(UPLOAD_DIR, `${uploadId}.json`), JSON.stringify(bundle), 'utf8');
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* 清理失败忽略 */
+    cleanupDir();
+    // 暂存布局：data/tmp-uploads/<uploadId>/bundle.json + attachments/<sha256>
+    const stageDir = path.join(UPLOAD_DIR, uploadId);
+    fs.mkdirSync(path.join(stageDir, 'attachments'), { recursive: true });
+    fs.writeFileSync(path.join(stageDir, 'bundle.json'), JSON.stringify(bundle), 'utf8');
+    let attCount = 0;
+    for (const [name, buf] of Object.entries(entries)) {
+      if (!name.startsWith('attachments/') || name.length <= 'attachments/'.length) continue;
+      fs.writeFileSync(path.join(stageDir, name), buf);
+      attCount += 1;
     }
-    json(res, 200, { ok: true, done: true, bytes: Buffer.byteLength(text, 'utf8') });
+    json(res, 200, { ok: true, done: true, bytes: zipBuf.length, attachments: attCount });
   });
 
   // 修改79/80：预检与恢复统一入口 —— bundle（内联小包）/ id（服务端已有包）/ uploadId（分片上传）
@@ -543,9 +604,13 @@ const count = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 
       }
     }
     if (body.uploadId) {
-      const f = findUpload(body.uploadId);
-      if (!f) fail(404, '上传的数据包不存在或已过期（超过 2 小时），请重新选择文件');
-      return JSON.parse(fs.readFileSync(f, 'utf8'));
+      const hit = findUpload(body.uploadId);
+      if (!hit) fail(404, '上传的数据包不存在或已过期（超过 2 小时），请重新选择文件');
+      try {
+        return loadUpload(hit);
+      } catch (e) {
+        fail(400, `上传的数据包读取失败：${e.message}`);
+      }
     }
     fail(400, '缺少数据包（bundle / id / uploadId）');
   }
@@ -576,8 +641,8 @@ const count = Array.isArray(store.db[k]) ? store.db[k].length : store.db[k] ? 1 
     applyBundle(bundle, attMap);
     // 修改79：恢复成功后释放分片上传的临时成品（可按 uploadId 重传，无需保留）
     try {
-      const f = findUpload(body.uploadId);
-      if (f) fs.unlinkSync(f);
+      const hit = findUpload(body.uploadId);
+      if (hit) fs.rmSync(hit.kind === 'zip' ? path.dirname(hit.bundleFile) : hit.file, { recursive: true, force: true });
     } catch {
       /* 清理失败不影响恢复结果 */
     }
