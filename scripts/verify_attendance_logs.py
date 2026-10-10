@@ -40,6 +40,25 @@ def q(s):
     return urllib.parse.quote(s)
 
 
+def req_raw(path, token=None):
+    """取二进制响应（修改80：数据包下载为 zip，需按魔数分流解包）"""
+    r = urllib.request.Request(BASE + path, method='GET')
+    tk = token if token is not None else TOKEN
+    if tk:
+        r.add_header('X-Auth-Token', tk)
+    with urllib.request.urlopen(r, timeout=120) as resp:
+        return resp.read()
+
+
+def load_bundle(raw):
+    """按魔数解析数据包：PK 开头为修改80 起的 zip 容器，否则回落 v1 的纯 JSON 包"""
+    if raw[:2] == b'PK':
+        import io, zipfile
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            return json.loads(z.read('bundle.json').decode('utf-8'))
+    return json.loads(raw.decode('utf-8'))
+
+
 def chk(cond, msg, extra=''):
     print(('  OK  : ' if cond else '  FAIL: ') + msg + ((' | ' + str(extra)) if extra else ''))
     return bool(cond)
@@ -186,8 +205,8 @@ print('\n[5] 备份包包含 attendanceLogs 集合')
 st, d = req('POST', '/api/data/backup', {'label': f'日志验证{SFX}'})
 BID = (d.get('meta') or {}).get('id')
 ok &= chk(st == 200 and BID, '5 创建备份成功', BID)
-st, raw = req('GET', f'/api/data/bundles/{BID}/download')
-bundle = raw if isinstance(raw, dict) else {}
+raw = req_raw(f'/api/data/bundles/{BID}/download')
+bundle = load_bundle(raw)
 cols = bundle.get('collections') or {}
 ok &= chk('attendanceLogs' in cols and isinstance(cols.get('attendanceLogs'), list),
           '5 collections 含 attendanceLogs（ARRAY_KEYS 已登记）')
