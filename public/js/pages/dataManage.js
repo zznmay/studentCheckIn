@@ -127,11 +127,13 @@ export default {
     // 小包仍按原样内联传输；大包切片上传，返回轻量 uploadId 供后续预检 / 恢复引用。
     // 每片带自动重试：网关掐的是「连接累计上行」，连接挂掉后重试会换新连接，累计清零；
     // 退避按指数增长（250ms→4s），给网关抖动窗口留出恢复时间。
-    async function postChunkWithRetry(body, attempts = UPLOAD_RETRY) {
+    // 补丁2：重试泛化为 withRetry(fn) —— 预检 / 恢复请求同样可能撞上抖动窗口（尤其
+    // 预检紧随 11 片连发之后），此前裸调零重试，一次抖动即全盘失败（实测 case）。
+    async function withRetry(fn, attempts = UPLOAD_RETRY) {
       let lastErr;
       for (let i = 0; i < attempts; i += 1) {
         try {
-          return await api('/api/data/restore/upload', { method: 'POST', body });
+          return await fn();
         } catch (e) {
           lastErr = e;
           if (e.status) throw e; // 业务错误（400/401/413 等）重试无意义，直接抛
@@ -139,6 +141,10 @@ export default {
         }
       }
       throw lastErr;
+    }
+
+    async function postChunkWithRetry(body, attempts = UPLOAD_RETRY) {
+      return withRetry(() => api('/api/data/restore/upload', { method: 'POST', body }), attempts);
     }
 
     const pace = () => new Promise((r) => setTimeout(r, UPLOAD_PACE_MS));
@@ -203,13 +209,29 @@ export default {
           const progress = (done, total, bytes) => {
             box.innerHTML = `<div class="muted small">正在上传数据包 ${done}/${total}（共 ${fmtSize(bytes)}）…</div>`;
           };
-          (async () => {
-            let payload;
-            if (source.kind === 'id') payload = { id: source.id };
-            else if (source.kind === 'bytes') payload = await uploadZipBytes(source.bytes, progress);
-            else payload = await uploadBundle(source.bundle, progress);
+          // 补丁2：payload 留在闭包里 —— 分片已传完时点「重试」直接重发预检，免整包重传
+          let payload = null;
+          const fail = (e) => {
+            // 修改79：区分「上传被网关掐断」与「服务未启动」，避免误导排障
+            const hint = e.message.startsWith('网络异常')
+              ? '<div class="dm-note" style="margin-top:10px">请求已被网络中断（上传与校验环节均已自动重试仍未成功）。请稍候点「重试」（已上传的分片不会重传）；若持续失败，请按 F12 打开控制台查看红色报错并反馈，或换一个网络环境（切换 Wi-Fi / 热点）再试。</div>'
+              : '';
+            box.innerHTML = `<div class="dm-banner warn">✗ ${esc(e.message)}</div>${hint}
+              <div style="margin-top:14px;text-align:right"><button class="btn btn-primary" data-act="rvRetry">重试</button></div>`;
+            box.querySelector('[data-act="rvRetry"]').onclick = () => {
+              const uploading = !payload && source.kind !== 'id';
+              box.innerHTML = `<div class="muted small">${uploading ? '正在上传数据包…' : '正在校验数据包…'}</div>`;
+              run().catch(fail);
+            };
+          };
+          const run = async () => {
+            if (!payload) {
+              if (source.kind === 'id') payload = { id: source.id };
+              else if (source.kind === 'bytes') payload = await uploadZipBytes(source.bytes, progress);
+              else payload = await uploadBundle(source.bundle, progress);
+            }
             box.innerHTML = `<div class="muted small">正在校验数据包…</div>`;
-            const r = await api('/api/data/restore/preview', { method: 'POST', body: payload });
+            const r = await withRetry(() => api('/api/data/restore/preview', { method: 'POST', body: payload }));
             const m = r.bundleMeta || {};
             if (!r.ok) {
               box.innerHTML = `
@@ -235,7 +257,9 @@ export default {
               const phrase = box.querySelector('#rvConfirm').value.trim();
               if (phrase !== '恢复') return toast('请输入确认短语「恢复」', 'error');
               try {
-                const rr = await api('/api/data/restore', { method: 'POST', body: { ...payload, confirm: phrase } });
+                // 补丁2：恢复是覆盖式写操作但幂等（同包覆盖 + 恢复前自动快照），
+                // 网络层失败自动重试（次数保守取 3；业务错误有 status 不重试）
+                const rr = await withRetry(() => api('/api/data/restore', { method: 'POST', body: { ...payload, confirm: phrase } }), 3);
                 close();
                 modal({
                   title: '恢复完成', width: 440, showFooter: false,
@@ -254,13 +278,8 @@ export default {
                 toast(e.message, 'error');
               }
             };
-          })().catch((e) => {
-            // 修改79：区分「上传被网关掐断」与「服务未启动」，避免误导排障
-            const hint = e.message.startsWith('网络异常')
-              ? '<div class="dm-note" style="margin-top:10px">分片上传已自动重试（每次重试会更换新连接）仍失败。请检查网络后重试；若持续失败，请按 F12 打开控制台查看具体报错并反馈，或先在原环境使用「生成迁移包」压缩数据（或清除历史签名附件）再导入。</div>'
-              : '';
-            wrap.querySelector('#rvBody').innerHTML = `<div class="dm-banner warn">✗ ${esc(e.message)}</div>${hint}`;
-          });
+          };
+          run().catch(fail);
         },
       });
     }
