@@ -26,6 +26,7 @@ const {
   normTime,
   normPeriods,
   normLeaveType,
+  normAttendanceStatus, // 修改82：点名状态别名归一（批量导入用）
   schoolYearOf,
   defaultTerms,
   paginate,
@@ -220,6 +221,7 @@ function sessionSummary(s) {
     createdAt: s.createdAt,
     updatedBy: s.updatedBy,
     updatedAt: s.updatedAt,
+    source: s.source || '', // 修改82：来源标记（批量导入补录 = 'import'；线上点名缺省为空）
     confirmStatus: s.confirmStatus || 'pending',
     confirmedName: s.confirmedName || '',
     confirmedAt: s.confirmedAt || '',
@@ -725,6 +727,20 @@ const TEMPLATES = {
     rows: [
       ['软件2301班', '2023级', '软件工程', '赵国栋', 'T2025001', '王海燕', 'T2025002', '刘明宇', '202301001'],
       ['软件2302班', '2023级', '软件工程', '赵国栋', 'T2025001', '王海燕', 'T2025002', '陈思远', '202302001'],
+    ],
+  },
+  // ==================== 修改82：批量导入点名记录模板（长表：一行 = 一名学生一次状态） ====================
+  // 同一（班级 + 日期 + 节次）的多行会自动归并为一场点名记录；
+  // 状态可用别名：出勤/正常/√、迟到、缺勤/旷课/×、请假/病假/事假/公假。
+  attendance: {
+    filename: '点名记录导入模板.xlsx',
+    ascii: 'attendance_import_template.xlsx',
+    headers: ['日期', '节次', '班级', '课程', '教师', '学号', '姓名', '状态', '备注'],
+    rows: [
+      ['2026/9/23', '1-2节', '软件2301班', '高等数学', '赵国栋', '202301001', '王雨轩', '出勤', ''],
+      ['2026/9/23', '1-2节', '软件2301班', '高等数学', '赵国栋', '202301002', '刘诗琪', '迟到', '迟到10分钟'],
+      ['2026/9/23', '1-2节', '软件2301班', '高等数学', '赵国栋', '202301003', '陈晨', '病假', '校医院就诊'],
+      ['2026/9/24', '3-4节', '软件2301班', '大学英语', '王海燕', '202301001', '王雨轩', '旷课', '无故缺席'],
     ],
   },
 };
@@ -2331,6 +2347,9 @@ route('GET', '/api/attendance', {}, async ({ res, user, query }) => {
   if (query.className) list = list.filter((s) => s.className === query.className);
   if (query.from) list = list.filter((s) => s.date >= query.from);
   if (query.to) list = list.filter((s) => s.date <= query.to);
+  // 修改82：来源筛选（import = 批量导入补录；online = 线上点名；缺省不筛选）。统计口径不受此参数影响
+  if (query.source === 'import') list = list.filter((s) => s.source === 'import');
+  else if (query.source === 'online') list = list.filter((s) => !s.source);
   if (query.q) {
     const q = query.q.trim();
     list = list.filter((s) => [s.courseName, s.teacher, s.createdBy].some((v) => String(v || '').includes(q)));
@@ -2533,6 +2552,426 @@ route('POST', '/api/attendance/batch-delete', { roles: ['admin'] }, async ({ res
   }
   recalcPunishmentsByPairs(affected);
   json(res, 200, { deleted });
+});
+
+// ==================== 修改82：批量导入点名记录（线下纸质点名表数字化） ====================
+// 长表模型：一行 = 一名学生一次状态；同（班级 + 日期 + 节次）的多行归并为一场点名记录。
+// 与线上点名完全同构：items 恒等于全量班级名单（表中未出现的学生按「出勤」计入，notice 提示复核）、
+// 唯一键同 POST /api/attendance、统计口径零区分（session.source 仅作展示/筛选标记）。
+
+/**
+ * 点名长表导入核心（仿 importLeaveRows：校验 + 构造 + 写内存，路由只做壳）。
+ * 行对象字段（/api/attendance/import/parse 的输出形状，也接受手工构造的归一化行）：
+ *   { _row?, date, periods(数组或"1-2节/3-4节"文本), className, courseName, teacher, sid, name, status, note }
+ * 流程：行级校验归一 → 学号匹配（限本班三级）→ 按场次分组（组内同学号重复行保留首行）
+ *   → 场次冲突处理（默认跳过；overwrite 可覆盖未签字记录；已签字硬拒绝）→ 批量写库。
+ * 写库副作用编排（性能）：per session 写 create/update 日志 → 整批单捕获窗口跑假单对账
+ *   → attendance/attendanceLogs/leaves 各 save 一次 → 处分重算按学生去重后一次调用。
+ */
+function importAttendanceRows(rows, user, overwrite = false) {
+  const errors = [];
+  const notices = [];
+  let rowSkipped = 0;
+  const groups = new Map(); // 场次键 -> 组（Map 保序，场次按首次出现顺序）
+
+  // 本班名单索引（导入不写 students，批内缓存安全）
+  const rosterIdx = new Map();
+  const rosterOf = (className) => {
+    if (!rosterIdx.has(className)) {
+      const list = store.db.students.filter((s) => s.className === className);
+      const byId = new Map(list.map((s) => [normIdText(s.studentId), s]));
+      const byName = new Map();
+      for (const s of list) {
+        const k = String(s.name || '').trim();
+        if (!byName.has(k)) byName.set(k, []);
+        byName.get(k).push(s);
+      }
+      rosterIdx.set(className, { list, byId, byName });
+    }
+    return rosterIdx.get(className);
+  };
+
+  rows.forEach((r, idx) => {
+    const row = r || {};
+    const rowNo = row._row || idx + 2;
+    // ---------- ① 归一化（幂等：parse 输出可再入） ----------
+    const classNameRaw = String(row.className || '').trim();
+    const dateRaw = String(row.date ?? '').trim();
+    const date = normDate(dateRaw);
+    // 修改82：点名一场对应具体节次，空值不沿用 normPeriods「空 = 全天」的假单语义（防漏填时误建全天 7 场）；
+    // 仅显式填写「全天」才展开为全部节次
+    const periodsText = String(row.periods ?? '').trim();
+    const np = Array.isArray(row.periods)
+      ? { periods: sortPeriods([...new Set(row.periods.map(String).filter((p) => PERIODS.includes(p)))]) }
+      : periodsText
+        ? normPeriods(periodsText)
+        : { periods: [] };
+    const courseName = String(row.courseName || '').trim();
+    const teacher = String(row.teacher || '').trim();
+    const sid = String(row.sid ?? '').trim();
+    const name = String(row.name ?? '').trim();
+    const ns = normAttendanceStatus(row.status);
+    const noteRaw = String(row.note ?? '').trim();
+    // 病假 / 事假 / 公假命中时原词写入备注前缀，保留线下假别信息
+    const note = ns.rawType ? `${ns.rawType}：${noteRaw}`.slice(0, 100) : noteRaw.slice(0, 100);
+
+    // ---------- ② 行级校验（逐条具体文案，定位到 Excel 行号） ----------
+    const probs = [];
+    if (!classNameRaw) probs.push('班级为必填');
+    if (!date) probs.push(`日期"${dateRaw || '空'}"无法识别（示例：2026-9-23 或 2026/9/23）`);
+    if (np.error) probs.push(np.error);
+    else if (!np.periods.length) probs.push('节次为必填');
+    if (!courseName) probs.push('课程为必填');
+    if (!sid) probs.push('学号为必填');
+    if (!name) probs.push('姓名为必填');
+    if (ns.error) probs.push(ns.error);
+    if (probs.length) {
+      errors.push({ row: rowNo, message: `${probs.join('；')}，该行已跳过` });
+      rowSkipped++;
+      return;
+    }
+
+    // ---------- ③ 班级准入（班级管理为权威源，修改73 口径） ----------
+    const gate = checkClassRegistered(classNameRaw);
+    if (!gate.ok) {
+      errors.push({ row: rowNo, message: `${gate.reason}，该行已跳过；请核对班级名称，或先在「班级管理」中登记该班级` });
+      rowSkipped++;
+      return;
+    }
+    const className = gate.name;
+
+    // ---------- ④ 学号匹配（限本班：精确/规范化 → 同班同名兜底） ----------
+    const cls = rosterOf(className);
+    let stu = cls.byId.get(normIdText(sid));
+    if (stu) {
+      if (stu.name !== name) {
+        errors.push({ row: rowNo, message: `学号"${sid}"与姓名"${name}"不匹配（名单中该学号为"${stu.name}"），该行已跳过；请核对后重新导入` });
+        rowSkipped++;
+        return;
+      }
+    } else {
+      const sameName = cls.byName.get(name) || [];
+      if (sameName.length === 1) {
+        stu = sameName[0];
+        notices.push({ row: rowNo, message: `表中学号"${sid}"在班级"${className}"名单中不存在，已按同班同名匹配到学号"${stu.studentId}"（视为学号更正，未跳过），请核对名单` });
+      } else if (sameName.length > 1) {
+        errors.push({ row: rowNo, message: `班级"${className}"下存在 ${sameName.length} 条同名记录（学号：${sameName.map((s) => s.studentId).join('、')}），无法判定该行指向哪位学生，该行已跳过；请先在「班级名单」中处理重复` });
+        rowSkipped++;
+        return;
+      } else {
+        errors.push({ row: rowNo, message: `学号"${sid}"未在班级"${className}"名单中找到，该行已跳过；请核对学号与班级，名单外学生需先在「班级名单」中登记` });
+        rowSkipped++;
+        return;
+      }
+    }
+
+    // ---------- ⑤ 场次分组（组内同学号重复行：保留首行） ----------
+    const pkey = sortPeriods(np.periods).join(',');
+    const gkey = `${className}|${date}|${pkey}`;
+    let grp = groups.get(gkey);
+    if (!grp) {
+      grp = { className, date, periods: sortPeriods(np.periods), pkey, courseName, teacher, rowNos: [], students: new Map(), courseSet: new Set() };
+      groups.set(gkey, grp);
+    }
+    if (courseName) grp.courseSet.add(courseName);
+    if (grp.students.has(stu.studentId)) {
+      errors.push({ row: rowNo, message: `该学生在本场次（${date} ${pkey}）出现多行，仅保留第一行，请人工核对是否状态不同` });
+      rowSkipped++;
+      return;
+    }
+    grp.rowNos.push(rowNo);
+    grp.students.set(stu.studentId, { status: ns.status, note });
+  });
+
+  // 组内课程名不一致：以第一行为准并提示（教师列不一致静默取第一行非空值）
+  for (const grp of groups.values()) {
+    if (grp.courseSet.size > 1) {
+      notices.push({ row: grp.rowNos[0], message: `班级"${grp.className}"在 ${grp.date}（${grp.pkey}）的各行课程名不一致（${[...grp.courseSet].join('、')}），已按第一行"${grp.courseName}"计入，请核对` });
+    }
+  }
+
+  // ---------- ⑥ 场次冲突处理 + 构造/更新 ----------
+  let createdSessions = 0;
+  let updatedSessions = 0;
+  let unchangedSessions = 0;
+  let skippedSessions = 0;
+  let importedRows = 0;
+  let unchangedRows = 0;
+  let skippedSessionRows = 0;
+  const writtenSessions = []; // 本批真实写库（新建 / 有 diff 的覆盖更新）的场次
+  const sessionDetails = [];
+
+  for (const grp of groups.values()) {
+    const exist = store.db.attendance.find(
+      (s) => s.className === grp.className && s.date === grp.date && sortPeriods(s.periods).join(',') === grp.pkey
+    );
+    if (exist && !overwrite) {
+      skippedSessions++;
+      skippedSessionRows += grp.rowNos.length;
+      errors.push({ row: grp.rowNos[0], message: `班级"${grp.className}"在 ${grp.date} 已存在相同时段（${grp.pkey}）的点名记录，该场 ${grp.rowNos.length} 行已跳过；如需覆盖请勾选「覆盖已有记录」重新导入` });
+      sessionDetails.push({ className: grp.className, date: grp.date, periods: grp.periods, action: 'skipped', reason: 'duplicate', rows: grp.rowNos.length, existingId: exist.id });
+      continue;
+    }
+    if (exist && exist.confirmStatus === 'confirmed') {
+      skippedSessions++;
+      skippedSessionRows += grp.rowNos.length;
+      errors.push({ row: grp.rowNos[0], message: `班级"${grp.className}"在 ${grp.date} 相同时段（${grp.pkey}）的点名记录已由任课老师${exist.confirmedName ? `"${exist.confirmedName}"` : ''}签字确认，不允许覆盖，该场 ${grp.rowNos.length} 行已跳过` });
+      sessionDetails.push({ className: grp.className, date: grp.date, periods: grp.periods, action: 'skipped', reason: 'confirmed', rows: grp.rowNos.length, existingId: exist.id });
+      continue;
+    }
+
+    if (exist) {
+      // 覆盖更新（对齐 PUT 语义：仅覆盖表中出现的学生的状态 / 备注，名单其余学生保持原值）
+      const before = exist.items.map((it) => ({ ...it }));
+      const map = new Map(exist.items.map((it) => [it.studentId, it]));
+      let changed = 0;
+      for (const [sidSt, rowSt] of grp.students) {
+        const base = map.get(sidSt);
+        if (!base) continue; // 名单已变动的防御性兜底（理论不可达：items 与名单同源）
+        let diff = false;
+        if (base.status !== rowSt.status) {
+          base.status = rowSt.status;
+          diff = true;
+        }
+        const note = String(rowSt.note || '').slice(0, 100);
+        if (note !== base.note) {
+          base.note = note;
+          diff = true;
+        }
+        if (diff) changed++;
+        else unchangedRows++;
+      }
+      if (changed) {
+        const now = nowISO();
+        exist.updatedBy = user.name;
+        exist.updatedAt = now;
+        appendAttendanceLog({
+          id: uid('alog'),
+          sessionId: exist.id,
+          action: 'update',
+          at: now,
+          operator: attendanceLogOperator(user),
+          changes: diffAttendanceItems(before, exist.items),
+          via: '批量导入覆盖',
+        });
+        updatedSessions++;
+        writtenSessions.push(exist);
+        sessionDetails.push({ className: grp.className, date: grp.date, periods: grp.periods, action: 'updated', rows: grp.rowNos.length, changed });
+      } else {
+        // 整场状态与库中一致：不戳 updatedAt、不写日志（对齐修改81「空保存不刷日志」）；
+        // 行级无变化已在上方循环逐生 unchangedRows++，此处不再按行数累加（防双重计数）
+        unchangedSessions++;
+        sessionDetails.push({ className: grp.className, date: grp.date, periods: grp.periods, action: 'unchanged', rows: grp.rowNos.length });
+      }
+      continue;
+    }
+
+    // 新建场次：items 恒等于全量班级名单，表中未出现的学生默认「出勤」（与 POST /api/attendance 一致）
+    const inTable = grp.students;
+    const items = rosterOf(grp.className).list
+      .slice()
+      .sort((a, b) => a.studentId.localeCompare(b.studentId))
+      .map((s) => {
+        const rowSt = inTable.get(s.studentId);
+        return {
+          studentId: s.studentId,
+          name: s.name,
+          status: rowSt ? rowSt.status : '出勤',
+          note: rowSt ? String(rowSt.note || '').slice(0, 100) : '',
+        };
+      });
+    const missing = rosterOf(grp.className).list.length - inTable.size;
+    if (missing > 0) {
+      notices.push({ row: grp.rowNos[0], message: `班级"${grp.className}"在 ${grp.date}（${grp.pkey}）的点名中，有 ${missing} 名学生未出现在表中，已按「出勤」计入，请人工复核` });
+    }
+    const now = nowISO();
+    const session = {
+      id: uid('att'),
+      className: grp.className,
+      date: grp.date,
+      periods: grp.periods,
+      courseName: grp.courseName,
+      teacher: grp.teacher,
+      items,
+      createdBy: user.name,
+      createdById: user.id,
+      createdAt: now,
+      updatedBy: user.name,
+      updatedAt: now,
+      confirmToken: uid('ctk') + uid('ctk').slice(4),
+      confirmStatus: 'pending',
+      source: 'import', // 修改82：来源标记（仅展示/筛选用，统计口径与线上点名完全一致）
+    };
+    store.db.attendance.push(session);
+    const preReconcile = session.items.map((it) => ({ ...it }));
+    appendAttendanceLog({
+      id: uid('alog'),
+      sessionId: session.id,
+      action: 'create',
+      at: now,
+      operator: attendanceLogOperator(user),
+      summary: { total: preReconcile.length, counts: sessionCounts({ items: preReconcile }) },
+      via: '批量导入',
+    });
+    createdSessions++;
+    importedRows += inTable.size;
+    writtenSessions.push(session);
+    sessionDetails.push({ className: grp.className, date: grp.date, periods: grp.periods, action: 'created', rows: grp.rowNos.length, total: items.length, missingStudents: missing });
+  }
+
+  // ---------- ⑦ 批量写库副作用 ----------
+  if (writtenSessions.length) {
+    // 假单双向对账：整批一个捕获窗口（attLogCapture 非可重入；窗口内仅纯内存写、无 fail 路径）
+    beginAttendanceLogCapture();
+    let touchedLeaves = false;
+    for (const s of writtenSessions) {
+      if (reconcileLeavesForSession(s)) touchedLeaves = true;
+    }
+    endAttendanceLogCapture(); // 对账改判落「假单自动校正」system 日志（内部自行 save）
+    store.save('attendance');
+    store.save('attendanceLogs'); // create/update 日志随批落盘（end 内部已 save 也幂等）
+    if (touchedLeaves) store.save('leaves');
+    // 修改30：点名变更影响缺勤节数 → 涉及学生去重后重算一次处分
+    const seen = new Set();
+    const pairs = [];
+    for (const s of writtenSessions) {
+      for (const it of s.items) {
+        const k = `${s.className}|${it.studentId}`;
+        if (!seen.has(k)) {
+          seen.add(k);
+          pairs.push({ className: s.className, studentId: it.studentId });
+        }
+      }
+    }
+    recalcPunishmentsByPairs(pairs);
+  }
+
+  return {
+    total: rows.length,
+    createdSessions,
+    updatedSessions,
+    unchangedSessions,
+    skippedSessions,
+    importedRows,
+    unchangedRows,
+    skippedRows: rowSkipped + skippedSessionRows,
+    failed: errors.length,
+    errors: errors.slice(0, 20),
+    errorsCount: errors.length,
+    notices: notices.slice(0, 20),
+    noticesCount: notices.length,
+    sessions: sessionDetails.slice(0, 50),
+  };
+}
+
+// 第一步：解析 Excel 长表 → 归一化行（不做业务校验；下行大 JSON 不受网关上行限制影响）
+route('POST', '/api/attendance/import/parse', { roles: ['admin', 'rights', 'collegeOfficer'] }, async ({ req, res, body }) => {
+  if (!rateLimit(`att-parse:${clientIp(req)}`, 30, 60000)) fail(429, '解析过于频繁，请稍后再试');
+  let buf;
+  try {
+    buf = Buffer.from(String(body.dataBase64 || ''), 'base64');
+  } catch {
+    fail(400, '文件数据无效');
+  }
+  if (!buf || buf.length < 100) fail(400, '文件内容为空或不是有效的 xlsx 文件');
+  let grid;
+  try {
+    grid = xlsx.parseXlsxRows(buf);
+  } catch (e) {
+    fail(400, `Excel 解析失败：${e.message}`);
+  }
+  // 定位表头行（允许前若干行为说明文字）：须同时包含 学号 + 状态 + 日期列
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(10, grid.length); i++) {
+    const texts = grid[i].map((c) => String(c ?? '').trim());
+    if (texts.includes('学号') && texts.includes('状态') && texts.some((t) => ['日期', '上课日期', '考勤日期'].includes(t))) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx < 0) fail(400, '未找到点名表头（需包含：日期、节次、班级、课程、学号、姓名、状态等列），请先下载导入模板核对格式');
+  const headers = grid[headerIdx].map((h) => String(h ?? '').trim());
+  const colOf = (...names) => {
+    for (const n of names) {
+      const i = headers.indexOf(n);
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  const col = {
+    date: colOf('日期', '上课日期', '考勤日期'),
+    periods: colOf('节次', '时段'),
+    className: colOf('班级'),
+    course: colOf('课程', '课程名称', '科目'),
+    teacher: colOf('教师', '任课老师', '老师'),
+    sid: colOf('学号'),
+    name: colOf('姓名'),
+    status: colOf('状态', '考勤状态', '出勤情况'),
+    note: colOf('备注', '说明'),
+  };
+  const missingCols = [];
+  if (col.date < 0) missingCols.push('日期');
+  if (col.periods < 0) missingCols.push('节次');
+  if (col.className < 0) missingCols.push('班级');
+  if (col.course < 0) missingCols.push('课程');
+  if (col.sid < 0) missingCols.push('学号');
+  if (col.name < 0) missingCols.push('姓名');
+  if (col.status < 0) missingCols.push('状态');
+  if (missingCols.length) fail(400, `缺少必需列：${missingCols.join('、')}（教师 / 备注列可省略）`);
+  const cellAt = (row, idx) => (idx >= 0 ? row[idx] : '');
+  const strOf = (v) => {
+    if (typeof v === 'number' && Number.isFinite(v)) return String(Number.isInteger(v) ? Math.trunc(v) : v);
+    return String(v ?? '').trim();
+  };
+  const rows = [];
+  for (let i = headerIdx + 1; i < grid.length; i++) {
+    const row = grid[i];
+    if (!row || !row.some((c) => String(c ?? '').trim() !== '')) continue;
+    // 修改82：学号与姓名均为空的行视为说明 / 备注行（纸质表数字化常见前导文字），静默跳过；
+    // 只缺其一的行仍保留，交给导入接口报行级错误
+    const sidCell = strOf(cellAt(row, col.sid));
+    const nameCell = strOf(cellAt(row, col.name));
+    if (!sidCell && !nameCell) continue;
+    const rowNo = i + 1;
+    // 日期：Excel 日期单元格为序列号 → 转 YYYY-MM-DD；文本日期原样传给导入接口归一
+    const dateCell = cellAt(row, col.date);
+    let date = '';
+    if (typeof dateCell === 'number') {
+      const dt = xlsx.cellToDateTime(dateCell);
+      if (dt && dt.date) date = dt.date;
+    } else {
+      date = strOf(dateCell);
+    }
+    rows.push({
+      _row: rowNo,
+      date,
+      periods: strOf(cellAt(row, col.periods)),
+      className: strOf(cellAt(row, col.className)),
+      courseName: strOf(cellAt(row, col.course)),
+      teacher: strOf(cellAt(row, col.teacher)),
+      sid: sidCell,
+      name: nameCell,
+      status: strOf(cellAt(row, col.status)),
+      note: strOf(cellAt(row, col.note)),
+    });
+  }
+  if (!rows.length) fail(400, '表中没有可导入的数据行');
+  json(res, 200, { rows, total: rows.length });
+});
+
+// 第二步：单批导入（前端按场次分组分批 ≤192KB 上传；服务端幂等，重发已导入行只会命中跳过语义）
+route('POST', '/api/attendance/import', { roles: ['admin', 'rights', 'collegeOfficer'] }, async ({ req, res, user, body }) => {
+  if (!rateLimit(`att-import:${clientIp(req)}`, 60, 60000)) fail(429, '导入过于频繁，请稍后再试');
+  const rows = Array.isArray(body.rows) ? body.rows : [];
+  if (!rows.length) fail(400, '没有可导入的数据');
+  const overwrite = !!body.overwrite;
+  const out = importAttendanceRows(rows, user, overwrite);
+  dataOplog(
+    user,
+    '批量导入点名记录',
+    `共 ${out.total} 行：新建 ${out.createdSessions} 场，覆盖更新 ${out.updatedSessions} 场，无变化 ${out.unchangedSessions} 场，跳过 ${out.skippedSessions} 场（${out.skippedRows} 行）`
+  );
+  json(res, 200, out);
 });
 
 // ==================== 任课老师免登录签字确认 ====================

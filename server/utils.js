@@ -173,6 +173,27 @@ function normLeaveType(s) {
   return '其他';
 }
 
+/**
+ * 修改82：归一化点名状态（批量导入点名记录用）。
+ * 线下纸质点名表的常见写法远多于系统四态，导入时做别名归一：
+ * - 出勤 ← 出勤/正常/到/到课/出席/√/✓
+ * - 迟到 ← 迟到/迟/晚到
+ * - 缺勤 ← 缺勤/旷课/旷/缺席/未到/未出勤/×/✗
+ * - 请假 ← 请假/病假/事假/公假/假；病假/事假/公假命中时 rawType 返回原词，
+ *          由调用方把原词写入备注前缀（如「病假：」），保留线下假别信息。
+ * 其余（含空）返回 { error }，由调用方生成行级错误。
+ */
+function normAttendanceStatus(s) {
+  const t = String(s ?? '').trim().replace(/\s+/g, '');
+  if (!t) return { error: '状态为必填' };
+  if (['出勤', '正常', '到', '到课', '出席', '√', '✓'].includes(t)) return { status: '出勤' };
+  if (['迟到', '迟', '晚到'].includes(t)) return { status: '迟到' };
+  if (['缺勤', '旷课', '旷', '缺席', '未到', '未出勤', '×', '✗', 'x', 'X'].includes(t)) return { status: '缺勤' };
+  if (['请假', '假'].includes(t)) return { status: '请假' };
+  if (t === '病假' || t === '事假' || t === '公假') return { status: '请假', rawType: t };
+  return { error: `状态"${t}"无法识别（可用：出勤、迟到、缺勤、请假）` };
+}
+
 // ---------- 学年 / 学期（缺勤公示用） ----------
 /**
  * 计算某日期所属学年：9/1 ~ 次年 7/31（8 月归属旧学年）。
@@ -235,6 +256,7 @@ module.exports = {
   normTime,
   normPeriods,
   normLeaveType,
+  normAttendanceStatus,
   schoolYearOf,
   defaultTerms,
   paginate,
