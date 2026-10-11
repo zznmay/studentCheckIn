@@ -57,7 +57,8 @@ function fmtSize(n) {
    连接、累计清零；③超过阈值的包先切片上传，拿到 uploadId 后预检 / 恢复只传几十字节。 */
 const UPLOAD_DIRECT_LIMIT = 900 * 1024; // 内联上传的安全阈值（UTF-8 字节）
 const UPLOAD_CHUNK_BYTES = 256 * 1024; // 单片上限（远低于网关掐断点）
-const UPLOAD_RETRY = 4; // 每片最多尝试次数（首传 + 3 次重试）
+const UPLOAD_RETRY = 6; // 每片最多尝试次数（首传 + 5 次重试；网关抖动窗口通常几秒内恢复）
+const UPLOAD_PACE_MS = 120; // 片间节流：避免连续大请求触发网关限流/抖动
 
 /** 按 UTF-8 字节数切分字符串：二分逼近边界，保证每片 ≤ maxBytes。
     快速路径用 maxBytes/3 字符兜底（UTF-8 每字符最多 3 字节的场景也不会超限）。 */
@@ -122,9 +123,10 @@ export default {
       renderBody();
     };
 
-    // ---------- 修改79：把数据包送上线可用载荷 ----------
+    // ---------- 修改79/80：把数据包送上线可用载荷 ----------
     // 小包仍按原样内联传输；大包切片上传，返回轻量 uploadId 供后续预检 / 恢复引用。
-    // 每片带自动重试：网关掐的是「连接累计上行」，连接挂掉后重试会换新连接，累计清零。
+    // 每片带自动重试：网关掐的是「连接累计上行」，连接挂掉后重试会换新连接，累计清零；
+    // 退避按指数增长（250ms→4s），给网关抖动窗口留出恢复时间。
     async function postChunkWithRetry(body, attempts = UPLOAD_RETRY) {
       let lastErr;
       for (let i = 0; i < attempts; i += 1) {
@@ -133,11 +135,13 @@ export default {
         } catch (e) {
           lastErr = e;
           if (e.status) throw e; // 业务错误（400/401/413 等）重试无意义，直接抛
-          await new Promise((r) => setTimeout(r, 200 * (i + 1))); // 网络层失败：退避后换连接重试
+          await new Promise((r) => setTimeout(r, Math.min(250 * 2 ** i, 4000)));
         }
       }
       throw lastErr;
     }
+
+    const pace = () => new Promise((r) => setTimeout(r, UPLOAD_PACE_MS));
 
     async function uploadBundle(bundle, onProgress) {
       const text = JSON.stringify(bundle);
@@ -148,6 +152,7 @@ export default {
       for (let i = 0; i < chunks.length; i += 1) {
         await postChunkWithRetry({ uploadId, index: i, total: chunks.length, chunk: chunks[i] });
         onProgress && onProgress(i + 1, chunks.length, bytes);
+        await pace();
       }
       return { uploadId };
     }
@@ -179,6 +184,7 @@ export default {
         const slice = bytes.subarray(i * BINARY_CHUNK_BYTES, Math.min(bytes.length, (i + 1) * BINARY_CHUNK_BYTES));
         await postChunkWithRetry({ uploadId, index: i, total, format: 'zip', fileSha256, chunk: bytesToBase64(slice) });
         onProgress && onProgress(i + 1, total, bytes.length);
+        await pace();
       }
       return { uploadId };
     }
