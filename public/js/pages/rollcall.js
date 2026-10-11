@@ -1,6 +1,6 @@
-import { api } from '../api.js';
+import { api, apiDownload, withRetry } from '../api.js';
 import { getUser, hasRole, hasAnyRole } from '../session.js';
-import { esc, toast, confirmDialog, renderPager, PERIODS, STATUSES, STATUS_CLS, countMini, periodTags, fmtTime, today, statusTag, ROLE_NAMES, ICONS, enhanceTables, upgradeSelectToCombo } from '../ui.js';
+import { esc, toast, confirmDialog, renderPager, PERIODS, STATUSES, STATUS_CLS, countMini, periodTags, fmtTime, today, statusTag, ROLE_NAMES, ICONS, enhanceTables, upgradeSelectToCombo, importModal } from '../ui.js';
 
 // ==================== 公共 ====================
 function segCell(item, disabled) {
@@ -42,12 +42,115 @@ async function myClassOptions(mode = "launch") {
   return classes.filter((c) => mine.includes(c.name)).map((c) => ({ name: c.name }));
 }
 
+// ==================== 修改82：批量导入点名记录 ====================
+// 三段式上传规避网关「单连接累计上行」掐断（修改79）：①xlsx 原文件（压缩后很小）→
+// 服务端 parse 归一化并原样下行（下行不受限）；②前端按场次分组分批（每批 ≤192KB、
+// 同场次行不拆批）；③逐批 POST + withRetry（失败换新连接重试；服务端幂等，重发已导入
+// 行只会命中「已存在相同时段」跳过语义，可安全重试）。
+const ATT_IMPORT_BATCH_BYTES = 192 * 1024;
+
+/** 按「场次」贪心分批：同一（班级+日期+节次）的行必须落在同一批。 */
+function batchAttendanceRows(rows) {
+  const groups = new Map(); // 场次键 -> 行数组（保持出现顺序）
+  for (const row of rows) {
+    const key = `${row.className}|${row.date}|${Array.isArray(row.periods) ? row.periods.join(',') : row.periods}`;
+    (groups.get(key) || groups.set(key, []).get(key)).push(row);
+  }
+  const batches = [];
+  let cur = [];
+  let curBytes = 0;
+  for (const grpRows of groups.values()) {
+    // JSON.stringify 字符数 ×2 粗估 UTF-8 字节（中文 ≤3B/字符，含 key 冗余，宁小勿大）
+    const gBytes = JSON.stringify(grpRows).length * 2 + 32;
+    if (cur.length && curBytes + gBytes > ATT_IMPORT_BATCH_BYTES) {
+      batches.push(cur);
+      cur = [];
+      curBytes = 0;
+    }
+    cur.push(grpRows);
+    curBytes += gBytes;
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
+/** 全量错误 / 提示明细 → CSV 文本（带 BOM，Excel 直接打开不乱码） */
+function attendanceImportCsv(errors, notices) {
+  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = ['行号,类型,说明'];
+  for (const x of errors || []) lines.push([x.row, '错误', x.message].map(cell).join(','));
+  for (const x of notices || []) lines.push([x.row, '提示', x.message].map(cell).join(','));
+  return '\ufeff' + lines.join('\r\n');
+}
+
+/** 批量导入入口弹窗：parse → 分批 → 聚合各批结果（importModal 的 upload 模式） */
+function openAttendanceImport(onDone) {
+  importModal({
+    title: '批量导入点名记录',
+    templateName: 'attendance',
+    templateFile: '点名记录导入模板.xlsx',
+    noticeTitle: '以下内容请人工核对：',
+    tip: `模板字段：<b>日期、节次、班级、课程、教师、学号、姓名、状态、备注</b>（一行 = 一名学生一次状态，同一「班级 + 日期 + 节次」的多行自动归并为一场点名）。<br/>
+      状态可用别名：<b>出勤</b>/正常/√、<b>迟到</b>、<b>缺勤</b>/旷课/×、<b>请假</b>/病假/事假/公假（假别自动写入备注）。<br/>
+      日期支持 2026-9-23 / 2026/9/23 / 2026年9月23日；节次支持「1-2节/3-4节」「1-2、9-10」「全天」。<br/>
+      <b>班级必须已在 <a href="#/classes">班级管理</a> 中登记</b>，学号必须在班级名单中存在（学号不一致时按同班同名自动匹配并提示）。<br/>
+      表中未出现的名单学生会按「出勤」计入该场（与线上点名一致），并在结果中提示人工复核。
+      <label class="import-opt" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer"><input type="checkbox" id="attOverwrite" /> 覆盖已存在的相同时段点名记录（任课老师已签字确认的记录不可覆盖）</label>`,
+    upload: async (dataBase64) => {
+      const resultBox = document.querySelector('#impResult');
+      const setProgress = (tx) => {
+        if (resultBox) resultBox.innerHTML = `<div class="muted small">${esc(tx)}</div>`;
+      };
+      // ① 解析归一化（下行大 JSON 不受网关上行限制影响）
+      setProgress('正在解析 Excel…');
+      const parsed = await api('/api/attendance/import/parse', { method: 'POST', body: { dataBase64 } });
+      const rows = parsed.rows || [];
+      if (!rows.length) throw new Error('表中没有可导入的数据行');
+      const overwrite = !!(document.getElementById('attOverwrite') || {}).checked;
+      // ② 按场次分批 + ③ 逐批提交
+      const batches = batchAttendanceRows(rows);
+      const agg = {
+        total: rows.length, createdSessions: 0, updatedSessions: 0, unchangedSessions: 0, skippedSessions: 0,
+        importedRows: 0, unchangedRows: 0, skippedRows: 0, failed: 0,
+        errors: [], notices: [], sessions: [], failedBatches: 0,
+      };
+      for (let i = 0; i < batches.length; i++) {
+        const batchRows = batches[i].flat();
+        setProgress(`导入进行中：第 ${i + 1}/${batches.length} 批（共 ${rows.length} 行）…`);
+        try {
+          const r = await withRetry(() => api('/api/attendance/import', { method: 'POST', body: { rows: batchRows, overwrite } }));
+          for (const k of ['createdSessions', 'updatedSessions', 'unchangedSessions', 'skippedSessions', 'importedRows', 'unchangedRows', 'skippedRows']) agg[k] += r[k] || 0;
+          agg.errors.push(...(r.errors || []));
+          agg.notices.push(...(r.notices || []));
+          agg.sessions.push(...(r.sessions || []));
+        } catch (e) {
+          // 重试耗尽仍失败（网络层异常）：记录后继续后续批；已导入批次不受影响，重传本文件幂等
+          agg.failedBatches++;
+          for (const row of batchRows) agg.errors.push({ row: row._row, message: `网络异常，该行未完成导入（${e.message}）；请稍后重新上传本文件重试（已导入数据不会重复）` });
+        }
+      }
+      if (agg.failedBatches) {
+        toast(`有 ${agg.failedBatches} 批因网络异常未完成，已自动重试多次仍失败；请稍后重新上传本文件`, 'error');
+      }
+      agg.failed = agg.errors.length;
+      // 行级真实写入数（供 importModal 的 toast / 结果行命中「导入 N 条」分支）
+      agg.imported = agg.importedRows;
+      // 全量明细留存供「下载错误明细」；展示层截断由 importModal 控制
+      agg.errorCsv = attendanceImportCsv(agg.errors, agg.notices);
+      return agg;
+    },
+    onDone,
+  });
+}
+
 // ==================== 点名记录列表 ====================
 export const RollcallListView = {
   async mount(root) {
     const user = getUser();
     const isAdmin = hasRole(user, 'admin');
-    const state = { className: '', from: '', to: '', q: '', page: 1, pageSize: 20 };
+    // 修改82：批量导入为管理动作（与 /api/students/import 同口径），不开放给纪律委员
+    const canImport = hasAnyRole(user, ['admin', 'rights', 'collegeOfficer']);
+    const state = { className: '', from: '', to: '', q: '', source: '', page: 1, pageSize: 20 };
     const classOptions = (await myClassOptions("view")).map((c) => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('');
 
     root.innerHTML = `
@@ -60,6 +163,8 @@ export const RollcallListView = {
             <p class="page-desc">${hasAnyRole(user, ['admin', 'collegeOfficer', 'rights']) ? '查看全院考勤记录，可发起点名并更正考勤状态' + (hasRole(user, 'admin') ? '，管理员可批量删除点名记录' : '') : hasRole(user, 'discipline') ? '对本班学生发起课堂点名，记录出勤情况' : '查看所带班级的考勤记录'}</p>
           </div>
           <div class="page-actions">
+            ${canImport ? '<button class="btn" id="btnImportTpl">' + ICONS.download + '下载导入模板</button>' : ''}
+            ${canImport ? '<button class="btn" id="btnImport">' + ICONS.upload + '批量导入点名记录</button>' : ''}
             ${isAdmin ? '<button class="btn btn-danger-plain" id="btnBatchDel" disabled>删除选中</button>' : ''}
             <a class="btn btn-primary" href="#/rollcall/new">${ICONS.plus} 发起点名</a>
           </div>
@@ -74,6 +179,8 @@ export const RollcallListView = {
           </div>
         </div>
         <div class="page-actions">
+          ${canImport ? `<button class="btn" id="mBtnImportTpl">${ICONS.download}<span>下载导入模板</span></button>` : ''}
+          ${canImport ? `<button class="btn" id="mBtnImport">${ICONS.upload}<span>批量导入</span></button>` : ''}
           ${isAdmin ? `<button class="btn btn-danger-plain" id="mBtnBatchDel" disabled>${ICONS.trash}<span id="batchDelTx">删除选中</span></button>` : ''}
           <a class="btn btn-primary" href="#/rollcall/new">${ICONS.plus} 发起点名</a>
         </div>
@@ -86,6 +193,8 @@ export const RollcallListView = {
             <input type="date" class="input" id="from" style="width:145px" />
             <span class="muted small">至</span>
             <input type="date" class="input" id="to" style="width:145px" />
+            <!-- 修改82：来源筛选（导入补录 / 线上点名） -->
+            <select class="select" id="srcFilter" style="width:124px"><option value="">全部来源</option><option value="online">线上点名</option><option value="import">批量导入</option></select>
             <input class="input" id="q" placeholder="课程 / 老师 / 发起人" style="width:180px" />
             <button class="btn" id="btnSearch">查询</button>
             <button class="btn" id="btnReset">重置</button>
@@ -111,6 +220,7 @@ export const RollcallListView = {
                 </label>
               </div>
               <select class="select f-span" id="mClsFilter"><option value="">全部班级</option>${classOptions}</select>
+              <select class="select f-span" id="mSrcFilter"><option value="">全部来源</option><option value="online">线上点名</option><option value="import">批量导入</option></select>
               <div class="search-row">
                 <div class="search-field">${ICONS.search}<input class="input" id="mQ" placeholder="课程 / 老师 / 发起人关键字" /></div>
                 <button class="btn btn-primary" id="mBtnSearch" type="button">查询</button>
@@ -203,7 +313,7 @@ export const RollcallListView = {
         <div class="rk-meta">
           <span>${ICONS.school}${esc(s.className)}</span>
           ${s.teacher ? `<span>${ICONS.user}${esc(s.teacher)}</span>` : ''}
-          <span>${ICONS.user}${esc(s.createdBy)}</span>
+          <span>${ICONS.user}${esc(s.createdBy)}${s.source === 'import' ? ' <span class="tag tag-gray">导入</span>' : ''}</span>
         </div>
         <div class="rk-stats">${countMini(s.counts)}</div>
         <div class="rk-foot">
@@ -223,6 +333,7 @@ export const RollcallListView = {
       if (state.from) params.set('from', state.from);
       if (state.to) params.set('to', state.to);
       if (state.q) params.set('q', state.q);
+      if (state.source) params.set('source', state.source);
       const d = await api(`/api/attendance?${params}`);
       infoEl.textContent = `共 ${d.total} 条记录`;
       renderPager(pagerEl, d, (p) => {
@@ -248,7 +359,7 @@ export const RollcallListView = {
           <td>${esc(s.teacher) || '<span class="muted">—</span>'}</td>
           <td>${countMini(s.counts)}</td>
           <td>${confirmCell(s)}</td>
-          <td>${esc(s.createdBy)}</td>
+          <td>${esc(s.createdBy)}${s.source === 'import' ? ' <span class="tag tag-gray" title="批量导入补录">导入</span>' : ''}</td>
           <td class="muted small">${fmtTime(s.updatedAt)}</td>
           <td class="td-actions"><a href="#/rollcall/${s.id}">详情</a></td>
         </tr>`
@@ -302,6 +413,16 @@ export const RollcallListView = {
       if (batchBtnM) batchBtnM.onclick = onBatchDel;
     }
 
+    // 修改82：批量导入点名记录（桌面/手机按钮共用同一弹窗；模板下载按钮直接下载）
+    for (const id of ['btnImport', 'mBtnImport']) {
+      const btn = root.querySelector(`#${id}`);
+      if (btn) btn.onclick = () => openAttendanceImport(() => load());
+    }
+    for (const id of ['btnImportTpl', 'mBtnImportTpl']) {
+      const btn = root.querySelector(`#${id}`);
+      if (btn) btn.onclick = () => apiDownload('/api/templates/attendance', '点名记录导入模板.xlsx');
+    }
+
     // 修改43：日期框空态提示自绘。部分机型（iOS/Safari 等）在窄内边距下不渲染原生
     // 日期占位，文本区被压没只剩右侧箭头；此处用 .date-ph 自绘「年/月/日」兜底，
     // 选中日期后隐藏。Gecko（Firefox）原生占位正常，不注入避免重复文字。
@@ -324,11 +445,12 @@ export const RollcallListView = {
     upgradeSelectToCombo(root.querySelector('#mClsFilter'));
 
     // 修改46：桌面表单（#btnSearch）与手机表单（#mBtnSearch）共用同一 state
-    function applyRollFilter(className, from, to, q) {
+    function applyRollFilter(className, from, to, q, source) {
       state.className = className;
       state.from = from;
       state.to = to;
       state.q = q;
+      state.source = source || '';
       state.page = 1;
       load();
     }
@@ -337,7 +459,8 @@ export const RollcallListView = {
         root.querySelector('#clsFilter').value,
         root.querySelector('#from').value,
         root.querySelector('#to').value,
-        root.querySelector('#q').value.trim()
+        root.querySelector('#q').value.trim(),
+        root.querySelector('#srcFilter').value
       );
     };
     root.querySelector('#mBtnSearch').onclick = () => {
@@ -346,11 +469,13 @@ export const RollcallListView = {
       const from = root.querySelector('#mFrom').value;
       const to = root.querySelector('#mTo').value;
       const q = root.querySelector('#mQ').value.trim();
+      const src = root.querySelector('#mSrcFilter').value;
       root.querySelector('#clsFilter').value = cls;
       root.querySelector('#from').value = from;
       root.querySelector('#to').value = to;
       root.querySelector('#q').value = q;
-      applyRollFilter(cls, from, to, q);
+      root.querySelector('#srcFilter').value = src;
+      applyRollFilter(cls, from, to, q, src);
     };
     // 重置：两套表单一起清空（桌面/手机按钮共用）
     const onRollReset = () => {
@@ -358,13 +483,15 @@ export const RollcallListView = {
       root.querySelector('#from').value = '';
       root.querySelector('#to').value = '';
       root.querySelector('#q').value = '';
+      root.querySelector('#srcFilter').value = '';
       root.querySelector('#mClsFilter').value = '';
       root.querySelector('#mFrom').value = '';
       root.querySelector('#mTo').value = '';
       root.querySelector('#mQ').value = '';
+      root.querySelector('#mSrcFilter').value = '';
       // 程序性清空不会触发 input/change，需主动同步空态提示
       dateInputs.forEach((el) => syncDatePh(el));
-      applyRollFilter('', '', '', '');
+      applyRollFilter('', '', '', '', '');
     };
     root.querySelector('#btnReset').onclick = onRollReset;
     root.querySelector('#mBtnReset').onclick = onRollReset;
@@ -882,7 +1009,7 @@ export const RollcallDetailView = {
           <div class="info-item"><div class="ii-label">节次</div><div class="ii-value">${periodTags(s.periods)}</div></div>
           <div class="info-item"><div class="ii-label">课程名称</div><div class="ii-value">${esc(s.courseName)}</div></div>
           <div class="info-item"><div class="ii-label">任课老师</div><div class="ii-value">${esc(s.teacher) || '—'}</div></div>
-          <div class="info-item"><div class="ii-label">发起人</div><div class="ii-value">${esc(s.createdBy)}</div></div>
+          <div class="info-item"><div class="ii-label">发起人</div><div class="ii-value">${esc(s.createdBy)}${s.source === 'import' ? ' <span class="tag tag-gray" title="批量导入补录">导入</span>' : ''}</div></div>
           <div class="info-item"><div class="ii-label">最后修改</div><div class="ii-value">${esc(s.updatedBy)} · ${fmtTime(s.updatedAt)}</div></div>
           <div class="info-item"><div class="ii-label">出勤情况</div><div class="ii-value">${countMini(s.counts)}</div></div>
         </div>
@@ -964,7 +1091,7 @@ export const RollcallDetailView = {
             <div class="rd-r"><span class="rd-ri">${ICONS.school}</span><span class="rd-rl">班级</span><span class="rd-rv">${esc(s.className)}</span></div>
             <div class="rd-r"><span class="rd-ri">${ICONS.calendar}</span><span class="rd-rl">上课日期</span><span class="rd-rv">${esc(s.date)}${weekdayCn(s.date) ? `（${weekdayCn(s.date)}）` : ''}</span></div>
             <div class="rd-r"><span class="rd-ri">${ICONS.user}</span><span class="rd-rl">任课老师</span><span class="rd-rv">${esc(s.teacher) || '—'}</span></div>
-            <div class="rd-r"><span class="rd-ri">${ICONS.user}</span><span class="rd-rl">发起人</span><span class="rd-rv">${esc(s.createdBy)}</span></div>
+            <div class="rd-r"><span class="rd-ri">${ICONS.user}</span><span class="rd-rl">发起人</span><span class="rd-rv">${esc(s.createdBy)}${s.source === 'import' ? ' <span class="tag tag-gray">导入</span>' : ''}</span></div>
             <div class="rd-r"><span class="rd-ri">${ICONS.clock}</span><span class="rd-rl">最后修改</span><span class="rd-rv">${esc(s.updatedBy)} · ${fmtTime(s.updatedAt)}</span></div>
           </div>
         </section>

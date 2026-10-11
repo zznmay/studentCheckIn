@@ -1,5 +1,5 @@
 // ==================== 数据管理（仅管理员）：总览 / 备份恢复 / 迁移 / 灰测留存 / 操作日志 ====================
-import { api, apiDownload, setToken } from '../api.js';
+import { api, apiDownload, setToken, withRetry } from '../api.js';
 import { clearUser } from '../session.js';
 import { esc, ICONS, toast, confirmDialog, modal, fmtTime } from '../ui.js';
 
@@ -129,20 +129,7 @@ export default {
     // 退避按指数增长（250ms→4s），给网关抖动窗口留出恢复时间。
     // 补丁2：重试泛化为 withRetry(fn) —— 预检 / 恢复请求同样可能撞上抖动窗口（尤其
     // 预检紧随 11 片连发之后），此前裸调零重试，一次抖动即全盘失败（实测 case）。
-    async function withRetry(fn, attempts = UPLOAD_RETRY) {
-      let lastErr;
-      for (let i = 0; i < attempts; i += 1) {
-        try {
-          return await fn();
-        } catch (e) {
-          lastErr = e;
-          if (e.status) throw e; // 业务错误（400/401/413 等）重试无意义，直接抛
-          await new Promise((r) => setTimeout(r, Math.min(250 * 2 ** i, 4000)));
-        }
-      }
-      throw lastErr;
-    }
-
+    // 修改82：withRetry 已公共化至 ../api.js（批量导入点名记录复用），行为不变。
     async function postChunkWithRetry(body, attempts = UPLOAD_RETRY) {
       return withRetry(() => api('/api/data/restore/upload', { method: 'POST', body }), attempts);
     }

@@ -88,3 +88,21 @@ export async function apiPostDownload(path, body, filename) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
 }
+
+/** 修改82：网络层自动重试（自 dataManage.js 公共化，批量导入点名记录复用）。
+ *  部署网关掐「单连接累计上行」时（修改79）表现为 fetch 抛异常——该异常不带 e.status，
+ *  换新连接重试即可恢复；业务错误（400/401/413 等）带 e.status，重试无意义直接抛。
+ *  退避 250ms·2^i 封顶 4s；默认 6 次尝试（首传 + 5 次重试，网关抖动窗口通常几秒内恢复）。 */
+export async function withRetry(fn, attempts = 6) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (e.status) throw e; // 业务错误（400/401/413 等）重试无意义，直接抛
+      await new Promise((r) => setTimeout(r, Math.min(250 * 2 ** i, 4000)));
+    }
+  }
+  throw lastErr;
+}

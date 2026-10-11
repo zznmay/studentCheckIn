@@ -497,13 +497,37 @@ export function importModal({ title, templateName, templateFile, tip, doImport, 
           // 其余导入沿用原有"导入 N 条"文案；r.skippedRows 为班级不匹配等被跳过的行数。
           const importedCount = r.inserted != null ? r.inserted : (r.imported ?? r.total - r.failed);
           const okLine = `✓ 共 ${r.total} 条${r.skipped ? `，跳过 ${r.skipped} 条非"已通过"记录` : ''}${r.duplicates ? `，跳过重复 ${r.duplicates} 条` : ''}，${r.inserted != null ? `新增 ${r.inserted} 条` : `导入 ${importedCount} 条`}${r.updated ? `，更新 ${r.updated} 条` : ''}${r.unchanged ? `，无变化 ${r.unchanged} 条` : ''}${r.skippedRows ? `，跳过 ${r.skippedRows} 条` : ''}${r.applied != null ? (r.reverted != null ? `，${r.applied} 条假单生效` : `，其中 ${r.applied} 条已自动更新考勤状态`) : ''}${r.reverted ? `，${r.reverted} 条无效请假已改判缺勤` : ''}`;
+          // 修改82：点名长表导入按「场次」二次汇总（一行 = 一名学生一次状态，同场次归并为一场）
+          const sessionLine = r.createdSessions != null
+            ? `<div class="ir-line ok">场次汇总：新建 ${r.createdSessions} 场${r.updatedSessions ? `，覆盖更新 ${r.updatedSessions} 场` : ''}${r.unchangedSessions ? `，无变化 ${r.unchangedSessions} 场` : ''}${r.skippedSessions ? `，跳过 ${r.skippedSessions} 场` : ''}</div>`
+            : '';
+          // 修改82：错误 / 提示超 20 条时提供全量明细下载（前端聚合结果经 r.errorCsv 传入）
+          const errCsvBtn = r.errorCsv && ((r.errorsCount || 0) + (r.noticesCount || 0) > 20)
+            ? `<button class="btn btn-sm" id="irDlCsv" style="margin-top:10px">下载完整明细（共 ${(r.errorsCount || 0) + (r.noticesCount || 0)} 条）</button>`
+            : '';
           resultBox.innerHTML = `
             <div class="import-result">
               <div class="ir-line ok">${okLine}</div>
+              ${sessionLine}
               ${partition}
               ${r.failed || errs.length ? `<div class="ir-line bad">✗ 以下 ${errs.length} 条${r.skippedRows != null ? '已跳过' : '未处理'}：</div><ul class="ir-errs">${errs.map((x) => `<li>第 ${x.row} 行：${esc(x.message)}</li>`).join('')}</ul>` : ''}
               ${notices.length ? `<div class="ir-line warn">⚠ ${noticeTitle}</div><ul class="ir-errs ir-notices">${notices.map((x) => `<li>第 ${x.row} 行：${esc(x.message)}</li>`).join('')}</ul>` : ''}
+              ${errCsvBtn}
             </div>`;
+          const dlCsv = resultBox.querySelector('#irDlCsv');
+          if (dlCsv) {
+            dlCsv.onclick = () => {
+              const blob = new Blob([r.errorCsv], { type: 'text/csv;charset=utf-8' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = '导入明细.csv';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 3000);
+            };
+          }
           toast(
             `导入完成：${r.inserted != null ? `新增 ${r.inserted} 条` : `导入 ${importedCount} 条`}${r.updated ? `，更新 ${r.updated} 条` : ''}${r.unchanged ? `，无变化 ${r.unchanged} 条` : ''}${r.skippedRows ? `，跳过 ${r.skippedRows} 条` : ''}${r.failed ? `，未处理 ${errs.length} 条` : ''}`,
             errs.length ? 'info' : 'success'
